@@ -1,0 +1,97 @@
+悬屿 使用说明
+=============
+
+官网地址：https://notchdeck.xyz/
+API 推荐：https://shop.xuedingtoken.com/?dist=KDLDYHBS
+
+
+一、安装
+
+1. 打开「悬屿-1.0.25.dmg」。
+2. 将「悬屿.app」拖到「Applications」文件夹。
+3. 从「应用程序」里启动「悬屿」。
+
+悬屿是顶栏常驻应用，不会出现在 Dock 里。启动后看 MacBook 顶部刘海区域或屏幕顶部中央。
+
+
+二、首次使用
+
+1. 点击顶部悬屿区域展开面板。
+2. 音乐页会读取 Apple Music 或 Spotify 的播放状态。
+3. 系统看板会按需请求位置、日历等权限。
+4. Agent 功能需要在悬屿设置里填写模型地址和 API key。
+
+配置文件保存在：
+
+~/Library/Application Support/Xuanyu/agent/config.json
+
+
+三、需要授权的系统权限
+
+- 自动化 / Apple Events：读取和控制 Apple Music、Spotify。
+- 蓝牙：读取 AirPods 连接状态和电量。
+- 位置：显示天气。
+- 日历：显示近期日程。
+- 网络：请求歌词、天气和模型接口。
+
+如果音乐状态显示「需要授权」，请打开：
+
+系统设置 -> 隐私与安全性 -> 自动化
+
+然后允许「悬屿」控制 Apple Music 或 Spotify。
+
+
+四、打不开的应对办法
+
+情况 A：提示「无法打开，因为无法验证开发者」
+
+1. 在「应用程序」里找到「悬屿.app」。
+2. 按住 Control 键点「悬屿.app」，选择「打开」。
+3. 在弹窗里再次点击「打开」。
+
+也可以打开：
+
+系统设置 -> 隐私与安全性
+
+在页面底部找到关于「悬屿」的拦截提示，点击「仍要打开」。
+
+
+情况 B：提示「悬屿.app 已损坏，无法打开」
+
+打开「终端」，执行：
+
+xattr -dr com.apple.quarantine /Applications/悬屿.app
+
+然后重新打开「悬屿.app」。
+
+
+情况 C：点击后没有反应
+
+1. 确认旧版本已经退出。
+2. 打开「活动监视器」，搜索「悬屿」或「Xuanyu」，结束旧进程。
+3. 重新从「应用程序」启动。
+
+也可以在终端执行：
+
+pkill -x Xuanyu
+open -a 悬屿
+
+
+情况 D：音乐连接不上
+
+1. 确认 Apple Music 或 Spotify 已经打开，并且正在播放或有当前曲目。
+2. 打开系统设置：
+
+系统设置 -> 隐私与安全性 -> 自动化
+
+3. 允许「悬屿」控制 Apple Music 或 Spotify。
+4. 如果之前拒绝过权限，可以在终端执行：
+
+tccutil reset AppleEvents com.xuanyu.app
+
+然后重新打开悬屿，并在弹窗里点击「允许」。
+
+
+五、退出应用
+
+展开悬屿面板后，点击右上角电源按钮，确认后退出。

@@ -1,0 +1,24 @@
+{
+  "name": "xuanyu-promo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts XuanyuPromo dist/xuanyu-promo.mp4 --codec=h264 --pixel-format=yuv420p",
+    "still": "remotion still src/index.ts XuanyuPromo dist/preview.png --frame=150"
+  },
+  "dependencies": {
+    "@remotion/cli": "latest",
+    "@remotion/media": "latest",
+    "@remotion/transitions": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "remotion": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "typescript": "latest"
+  }
+}

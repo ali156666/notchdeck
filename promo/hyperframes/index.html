@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>悬屿 · Apple Style GSAP Storyboard</title>
+    <style>
+      :root {
+        --bg: #f5f5f7;
+        --ink: #ffffff;
+        --fg: #1d1d1f;
+        --muted: #6e6e73;
+        --dim: #86868b;
+        --green: #29c869;
+        --blue: #3478f6;
+        --amber: #f5a524;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: system-ui, sans-serif;
+      }
+
+      #xuanyu-apple-storyboard {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--bg);
+      }
+
+      .atmosphere {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(ellipse at 50% -18%, rgba(255, 255, 255, 0.98), transparent 38%),
+          radial-gradient(ellipse at 50% 108%, rgba(210, 214, 222, 0.52), transparent 40%),
+          radial-gradient(circle at 18% 18%, rgba(52, 120, 246, 0.1), transparent 24%),
+          radial-gradient(circle at 84% 76%, rgba(41, 200, 105, 0.1), transparent 26%),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(245, 245, 247, 0.96) 34%, rgba(232, 235, 240, 0.54));
+      }
+
+      .scene {
+        position: absolute;
+        inset: 0;
+        padding: 118px 150px;
+        box-sizing: border-box;
+        opacity: 0;
+      }
+
+      .headline {
+        font-size: 78px;
+        line-height: 0.96;
+        font-weight: 860;
+        letter-spacing: 0;
+      }
+
+      .caption {
+        margin-top: 34px;
+        color: var(--muted);
+        font-size: 27px;
+        line-height: 1.35;
+        font-weight: 560;
+      }
+
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+        margin-bottom: 24px;
+      }
+
+      .shot {
+        position: absolute;
+        left: 50%;
+        bottom: 84px;
+        width: 1540px;
+        transform: translateX(-50%);
+        filter: drop-shadow(0 38px 72px rgba(29, 29, 31, 0.22));
+        will-change: transform, opacity;
+      }
+
+      .shot.narrow {
+        width: 1260px;
+      }
+
+      .shot.agent {
+        width: 1066px;
+      }
+
+      #music .shot {
+        bottom: 162px;
+      }
+
+      #quick .shot {
+        bottom: 420px;
+      }
+
+      #clipboard .shot {
+        bottom: 184px;
+      }
+
+      .collapsed {
+        width: 440px;
+        left: 50%;
+        top: 142px;
+        bottom: auto;
+      }
+
+      .clean-text {
+        position: absolute;
+        left: 14%;
+        right: 13%;
+        top: 7%;
+        bottom: 7%;
+        border-radius: 18px;
+        background: #030303;
+        color: #f5f5f7;
+        display: grid;
+        place-items: center;
+        font-size: 24px;
+        font-weight: 820;
+      }
+
+      .privacy {
+        position: absolute;
+        left: 2.6%;
+        right: 2.6%;
+        top: 28%;
+        height: 70%;
+        border-radius: 24px;
+        background: #ffffff;
+        border: 1px solid rgba(29, 29, 31, 0.1);
+        box-shadow: 0 28px 70px rgba(29, 29, 31, 0.16);
+        display: grid;
+        place-items: center;
+        font-size: 28px;
+        font-weight: 780;
+      }
+
+      .title {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 520px;
+        text-align: center;
+      }
+
+      .small {
+        color: var(--dim);
+        font-size: 22px;
+        font-weight: 700;
+        margin-bottom: 22px;
+      }
+
+      .title-main {
+        font-size: 104px;
+        line-height: 0.96;
+        font-weight: 880;
+        letter-spacing: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="xuanyu-apple-storyboard"
+      data-composition-id="xuanyu-apple-storyboard"
+      data-width="1920"
+      data-height="1080"
+      data-start="0"
+      data-duration="30"
+      data-track-index="0"
+    >
+      <audio id="track" data-start="0" data-duration="30" data-track-index="3" src="assets/audio/3-strikes.mp3" data-volume="0.72"></audio>
+      <div class="atmosphere"></div>
+
+      <section id="intro" class="scene">
+        <div class="shot collapsed">
+          <img src="assets/shots/collapsed-intro.png" width="440" alt="" />
+          <div class="clean-text">悬屿运行中</div>
+        </div>
+        <div class="title">
+          <div class="small">for Mac</div>
+          <div class="title-main">悬屿</div>
+          <div class="title-main">Mac 顶中工作岛</div>
+        </div>
+      </section>
+
+      <section id="agent" class="scene">
+        <div class="dot" style="background: var(--blue); box-shadow: 0 0 28px rgba(52, 120, 246, 0.42)"></div>
+        <div class="headline">本地 Agent</div>
+        <div class="headline">常驻顶栏。</div>
+        <div class="caption">Skills、MCP、文件拖入与确认流。</div>
+        <img class="shot agent" src="assets/shots/agent-skills.png" alt="" />
+      </section>
+
+      <section id="dashboard" class="scene">
+        <div class="dot" style="background: var(--green); box-shadow: 0 0 28px rgba(41, 200, 105, 0.42)"></div>
+        <div class="headline">所有状态</div>
+        <div class="headline">一眼看见。</div>
+        <div class="caption">系统、内存、天气、日程。</div>
+        <img class="shot" src="assets/shots/dashboard.png" alt="" />
+      </section>
+
+      <section id="music" class="scene">
+        <div class="dot" style="background: var(--blue); box-shadow: 0 0 28px rgba(52, 120, 246, 0.42)"></div>
+        <div class="headline">音乐在播</div>
+        <div class="headline">电量也在。</div>
+        <div class="caption">歌词、进度、AirPods，贴着顶部走。</div>
+        <img class="shot narrow" src="assets/shots/music.png" alt="" />
+      </section>
+
+      <section id="quick" class="scene">
+        <div class="dot" style="background: var(--amber); box-shadow: 0 0 28px rgba(245, 165, 36, 0.42)"></div>
+        <div class="headline">常用 App</div>
+        <div class="headline">一触即达。</div>
+        <div class="caption">Finder、Chrome、Terminal，都收在岛里。</div>
+        <img class="shot narrow" src="assets/shots/quickapps.png" alt="" />
+      </section>
+
+      <section id="clipboard" class="scene">
+        <div class="dot" style="background: var(--green); box-shadow: 0 0 28px rgba(41, 200, 105, 0.42)"></div>
+        <div class="headline">临时内容</div>
+        <div class="headline">自动归档。</div>
+        <div class="caption">文本、图片、文件，回填时不用再找。</div>
+        <div class="shot narrow">
+          <img src="assets/shots/clipboard.png" width="1260" alt="" />
+          <div class="privacy">内容已遮罩 · 能力保留</div>
+        </div>
+      </section>
+
+      <section id="outro" class="scene">
+        <div class="shot collapsed">
+          <img src="assets/shots/collapsed-outro.png" width="440" alt="" />
+          <div class="clean-text">悬屿运行中</div>
+        </div>
+        <div class="title">
+          <div class="small">悬屿</div>
+          <div class="title-main">少切换。</div>
+          <div class="title-main">多完成。</div>
+        </div>
+      </section>
+
+      <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+      <script>
+        window.__timelines = window.__timelines || {};
+        const tl = gsap.timeline({ paused: true, defaults: { ease: "power3.out" } });
+
+        function scene(id, start, end, shotScale) {
+          tl.fromTo(id, { autoAlpha: 0, y: 28 }, { autoAlpha: 1, y: 0, duration: 0.7 }, start);
+          tl.fromTo(`${id} .shot`, { y: 44, scale: shotScale - 0.035 }, { y: 0, scale: shotScale, duration: 1.1 }, start + 0.1);
+          tl.to(`${id} .shot`, { y: -24, scale: shotScale + 0.018, duration: end - start - 0.8, ease: "none" }, start + 0.8);
+          tl.to(id, { autoAlpha: 0, y: -22, duration: 0.5, ease: "power2.in" }, end - 0.5);
+        }
+
+        scene("#intro", 0, 3.0, 1.08);
+        scene("#agent", 3.0, 8.0, 0.58);
+        scene("#dashboard", 7.5, 12.0, 0.74);
+        scene("#music", 11.5, 16.0, 0.88);
+        scene("#quick", 15.5, 20.0, 0.86);
+        scene("#clipboard", 19.5, 25.0, 0.9);
+        scene("#outro", 24.7, 30.0, 1.12);
+
+        tl.fromTo(".atmosphere", { opacity: 0.62 }, { opacity: 1, duration: 15, yoyo: true, repeat: 1, ease: "sine.inOut" }, 0);
+        window.__timelines["xuanyu-apple-storyboard"] = tl;
+      </script>
+    </div>
+  </body>
+</html>

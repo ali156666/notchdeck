@@ -1,0 +1,18 @@
+# Build artifacts
+.build/
+.swiftpm/
+dist/
+AgentRuntime/dist/
+
+# macOS system files
+.DS_Store
+
+# IDE
+.vscode/
+.cursor/
+.obsidian/
+
+# Local files
+*.log
+*.tmp
+dev.sh
