@@ -11,6 +11,7 @@ final class IslandAppState {
     let dashboard = SystemDashboardService()
     let clipboard = ClipboardService()
     var isExpanded = false
+    var isMiniExpanded = false
     var mode: IslandMode = .dashboard
     var agentShowsSettings = false
     var agentSettingsTab: AgentSettingsTab = .model
