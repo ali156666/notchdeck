@@ -7,6 +7,7 @@ struct NotchPanelView: View {
     let screen: NSScreen
     @State private var isFileDropTargeted = false
     @State private var showsQuitConfirmation = false
+    @State private var miniExpandTask: Task<Void, Never>?
 
     private var hasNotch: Bool {
         ScreenDetector.screenHasNotch(screen)
@@ -46,6 +47,25 @@ struct NotchPanelView: View {
         }
     }
 
+    private var miniExpandedWidth: CGFloat {
+        min(500, screen.frame.width - 40)
+    }
+
+    private var miniExpandedHeight: CGFloat {
+        notchHeight + 64
+    }
+
+    private var currentWidth: CGFloat {
+        if state.isExpanded { return expandedWidth }
+        if state.isMiniExpanded { return miniExpandedWidth }
+        return collapsedWidth
+    }
+
+    private var currentHeight: CGFloat? {
+        if state.isExpanded { return nil }
+        return state.isMiniExpanded ? miniExpandedHeight : collapsedHeight
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             island
@@ -54,6 +74,7 @@ struct NotchPanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.locale, Locale(identifier: "zh-Hans"))
         .animation(.snappy(duration: 0.32), value: state.isExpanded)
+        .animation(.snappy(duration: 0.24), value: state.isMiniExpanded)
         .animation(.snappy(duration: 0.22), value: state.mode)
         .alert("退出悬屿？", isPresented: $showsQuitConfirmation) {
             Button("取消", role: .cancel) {}
@@ -77,6 +98,8 @@ struct NotchPanelView: View {
         }
         .onChange(of: state.isExpanded) { _, expanded in
             if expanded {
+                miniExpandTask?.cancel()
+                state.isMiniExpanded = false
                 state.agentCollapsedReminder = nil
                 state.pomodoroCollapsedReminder = nil
                 state.agent.clearAttention()
@@ -89,31 +112,29 @@ struct NotchPanelView: View {
             if state.isExpanded {
                 expandedPanel
                     .transition(.opacity.combined(with: .move(edge: .top)))
+            } else if state.isMiniExpanded {
+                miniExpandedPanel
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             } else {
                 collapsedBar
                     .transition(.opacity)
             }
         }
-        .frame(width: state.isExpanded ? expandedWidth : collapsedWidth)
-        .frame(height: state.isExpanded ? nil : collapsedHeight)
+        .frame(width: currentWidth)
+        .frame(height: currentHeight)
         .frame(minHeight: notchHeight)
         .background(.black)
         .clipShape(
             UnevenRoundedRectangle(
-                bottomLeadingRadius: state.isExpanded ? 24 : 13,
-                bottomTrailingRadius: state.isExpanded ? 24 : 13
+                bottomLeadingRadius: state.isExpanded || state.isMiniExpanded ? 24 : 13,
+                bottomTrailingRadius: state.isExpanded || state.isMiniExpanded ? 24 : 13
             )
         )
         .contentShape(Rectangle())
         .overlay(islandDropOverlay)
         .onDrop(of: AgentFileDrop.typeIdentifiers, isTargeted: $isFileDropTargeted, perform: handleIslandFileDrop)
-        .onTapGesture {
-            guard !state.isExpanded else { return }
-            withAnimation(.snappy(duration: 0.32)) {
-                state.isExpanded = true
-                state.agentCollapsedReminder = nil
-                state.pomodoroCollapsedReminder = nil
-            }
+        .onHover { hovering in
+            handleIslandHover(hovering)
         }
     }
 
@@ -174,6 +195,169 @@ struct NotchPanelView: View {
                 )
                     .frame(height: min(500, screen.frame.height - 92))
             }
+        }
+    }
+
+    private var miniExpandedPanel: some View {
+        VStack(spacing: 0) {
+            miniStatusBar
+                .frame(height: notchHeight)
+
+            if state.media.playback.hasPlayableTrack {
+                miniMusicControls
+            } else {
+                miniQuickApps
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background {
+            Color.black.opacity(0.001)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    state.mode = state.media.playback.hasPlayableTrack ? .music : .quickApps
+                    expandFully()
+                }
+        }
+    }
+
+    private var miniStatusBar: some View {
+        HStack(alignment: .center, spacing: 8) {
+            MiniStatusPill(icon: "memorychip", text: "\(Int(state.dashboard.memory.percent * 100))%")
+            if let airPodsText = miniAirPodsText {
+                MiniStatusPill(icon: "airpodspro", text: airPodsText)
+            }
+
+            Spacer(minLength: 96)
+
+            MiniStatusPill(icon: "cloud.sun", text: miniWeatherText)
+        }
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .allowsHitTesting(false)
+    }
+
+    private var miniWeatherText: String {
+        let weather = state.dashboard.weather
+        if weather.temperature != "--" {
+            return "\(weather.temperature) \(weather.description)"
+        }
+        return weather.description
+    }
+
+    private var miniAirPodsText: String? {
+        let airPods = state.media.airPods
+        guard airPods.isConnected else { return nil }
+        let values = [airPods.leftBattery, airPods.rightBattery].compactMap { $0 }
+        if !values.isEmpty {
+            return "\(values.min() ?? values[0])%"
+        }
+        if let caseBattery = airPods.caseBattery {
+            return "\(caseBattery)%"
+        }
+        return "已连"
+    }
+
+    private var miniMusicControls: some View {
+        HStack(spacing: 11) {
+            miniArtwork
+            VStack(alignment: .leading, spacing: 3) {
+                Text(state.media.playback.title)
+                    .font(.system(size: 12.5, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.94))
+                    .lineLimit(1)
+                Text(state.media.playback.artist)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.56))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                state.mode = .music
+                expandFully()
+            }
+
+            MiniCircleButton(icon: "backward.fill", help: "上一首") {
+                Task { await state.media.previousTrack() }
+            }
+            MiniCircleButton(icon: state.media.playback.isPlaying ? "pause.fill" : "play.fill", size: 34, help: state.media.playback.isPlaying ? "暂停" : "播放") {
+                Task { await state.media.togglePlay() }
+            }
+            MiniCircleButton(icon: "forward.fill", help: "下一首") {
+                Task { await state.media.nextTrack() }
+            }
+            MiniCircleButton(icon: "chevron.down", help: "完全展开") {
+                state.mode = .music
+                expandFully()
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 64)
+    }
+
+    private var miniQuickApps: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "square.grid.2x2")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(.white.opacity(0.82))
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    state.mode = .quickApps
+                    expandFully()
+                }
+
+            ForEach(Array(state.quickLaunch.apps.prefix(5))) { app in
+                Button {
+                    state.quickLaunch.launch(app)
+                } label: {
+                    Image(nsImage: state.quickLaunch.icon(for: app))
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 25, height: 25)
+                        .frame(width: 38, height: 38)
+                        .background(.white.opacity(0.08), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!app.isInstalled)
+                .opacity(app.isInstalled ? 1 : 0.45)
+                .help(app.name)
+            }
+
+            Spacer(minLength: 0)
+
+            MiniCircleButton(icon: "chevron.down", help: "完全展开") {
+                state.mode = .quickApps
+                expandFully()
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 64)
+    }
+
+    private var miniArtwork: some View {
+        ZStack {
+            if let data = state.media.playback.artwork, let image = NSImage(data: data) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: state.media.playback.isPlaying ? "waveform" : "music.note")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.white.opacity(0.08))
+            }
+        }
+        .frame(width: 42, height: 42)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(.white.opacity(0.10), lineWidth: 1)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            state.mode = .music
+            expandFully()
         }
     }
 
@@ -254,6 +438,9 @@ struct NotchPanelView: View {
             }
         }
         .frame(height: hasNotch ? collapsedHeight : notchHeight)
+        .onTapGesture {
+            expandFully()
+        }
     }
 
     private var collapsedNotchDropdownBar: some View {
@@ -407,6 +594,84 @@ struct NotchPanelView: View {
             return state.media.playback.title
         }
         return lyric
+    }
+
+    private func expandFully() {
+        guard !state.isExpanded else { return }
+        miniExpandTask?.cancel()
+        withAnimation(.snappy(duration: 0.32)) {
+            state.isMiniExpanded = false
+            state.isExpanded = true
+            state.agentCollapsedReminder = nil
+            state.pomodoroCollapsedReminder = nil
+        }
+    }
+
+    private func handleIslandHover(_ hovering: Bool) {
+        guard !state.isExpanded else { return }
+        miniExpandTask?.cancel()
+
+        if hovering {
+            miniExpandTask = Task {
+                try? await Task.sleep(for: .milliseconds(220))
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard !state.isExpanded else { return }
+                    withAnimation(.snappy(duration: 0.24)) {
+                        state.isMiniExpanded = true
+                    }
+                    state.dashboard.refreshAll()
+                    Task { await state.media.refreshPlayback() }
+                    Task { await state.media.refreshAirPods() }
+                }
+            }
+        } else {
+            withAnimation(.snappy(duration: 0.20)) {
+                state.isMiniExpanded = false
+            }
+        }
+    }
+}
+
+private struct MiniCircleButton: View {
+    let icon: String
+    var size: CGFloat = 30
+    let help: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: size > 32 ? 14 : 12, weight: .bold))
+                .foregroundStyle(.white.opacity(hovering ? 0.96 : 0.76))
+                .frame(width: size, height: size)
+                .background(.white.opacity(hovering ? 0.17 : 0.08), in: Circle())
+                .scaleEffect(hovering ? 1.05 : 1)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help)
+    }
+}
+
+private struct MiniStatusPill: View {
+    let icon: String
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon)
+                .font(.system(size: 10.5, weight: .bold))
+            Text(text)
+                .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .foregroundStyle(.white.opacity(0.72))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.white.opacity(0.07), in: Capsule())
     }
 }
 
