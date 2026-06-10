@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/xingyi/Xuanyu/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/xingyi/Xuanyu?display_name=tag&sort=semver"></a>
+  <a href="https://github.com/ali156666/notchdeck/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/ali156666/notchdeck?display_name=tag&sort=semver"></a>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="macOS" src="https://img.shields.io/badge/macOS-14%2B-black">
   <img alt="Swift" src="https://img.shields.io/badge/Swift-5.9-orange">
@@ -93,8 +93,8 @@
 ### 从源码运行
 
 ```bash
-git clone https://github.com/xingyi/Xuanyu.git
-cd Xuanyu
+git clone https://github.com/ali156666/notchdeck.git
+cd notchdeck/Xuanyu
 ./build.sh
 ```
 
