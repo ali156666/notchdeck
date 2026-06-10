@@ -82,3 +82,7 @@ QQ 交流群：`782676841`
 ## 许可证
 
 本项目使用 MIT License。见 [LICENSE](./LICENSE)。
+
+## 友情链接
+
+- [LINUX DO](https://linux.do/)
