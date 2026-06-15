@@ -118,12 +118,13 @@ struct NotchPanelView: View {
             } else {
                 collapsedBar
                     .transition(.opacity)
+                    .opacity(state.shouldHideCollapsedBarForFullscreen ? 0 : 1)
             }
         }
         .frame(width: currentWidth)
         .frame(height: currentHeight)
         .frame(minHeight: notchHeight)
-        .background(.black)
+        .background(.black.opacity(state.shouldHideCollapsedBarForFullscreen ? 0.001 : 1))
         .clipShape(
             UnevenRoundedRectangle(
                 bottomLeadingRadius: state.isExpanded || state.isMiniExpanded ? 24 : 13,

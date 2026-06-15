@@ -12,6 +12,8 @@ final class IslandAppState {
     let clipboard = ClipboardService()
     var isExpanded = false
     var isMiniExpanded = false
+    var hidesCollapsedBarDuringFullscreen = true
+    var isFullscreenAppActive = false
     var mode: IslandMode = .dashboard
     var agentShowsSettings = false
     var agentSettingsTab: AgentSettingsTab = .model
@@ -35,6 +37,13 @@ final class IslandAppState {
         pomodoro.status != .running &&
         pomodoro.status != .completed &&
         pomodoroCollapsedReminder == nil
+    }
+
+    var shouldHideCollapsedBarForFullscreen: Bool {
+        hidesCollapsedBarDuringFullscreen &&
+        isFullscreenAppActive &&
+        !isExpanded &&
+        !isMiniExpanded
     }
 
     func collapsedIslandHeight(for screen: NSScreen) -> CGFloat {
