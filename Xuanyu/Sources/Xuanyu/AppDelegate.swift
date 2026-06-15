@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let state = IslandAppState()
     private var panelController: PanelWindowController?
     private var debugObservers: [NSObjectProtocol] = []
+    private var fullscreenMonitor: FullscreenAppMonitor?
     private var servicesStarted = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -15,12 +16,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelController = PanelWindowController(state: state)
         panelController?.showPanel()
         startServices()
+        startFullscreenMonitor()
         installDebugNotifications()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         debugObservers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
         debugObservers.removeAll()
+        fullscreenMonitor?.stop()
         stopServices()
         panelController?.close()
     }
@@ -186,5 +189,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.dashboard.stop()
         state.clipboard.stop()
         servicesStarted = false
+    }
+
+    private func startFullscreenMonitor() {
+        let monitor = FullscreenAppMonitor(
+            isEnabled: { [weak self] in
+                self?.state.hidesCollapsedBarDuringFullscreen ?? false
+            },
+            update: { [weak self] isActive in
+                self?.state.isFullscreenAppActive = isActive
+            }
+        )
+        fullscreenMonitor = monitor
+        monitor.start()
     }
 }

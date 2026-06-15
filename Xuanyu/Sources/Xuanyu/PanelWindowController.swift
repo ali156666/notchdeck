@@ -138,6 +138,10 @@ final class PanelWindowController: NSObject {
             }
         }
 
+        if state.isMiniExpanded {
+            return NSSize(width: min(520, screen.frame.width - 24), height: ScreenDetector.topBarHeight(for: screen) + 74)
+        }
+
         let width = ScreenDetector.collapsedIslandWidth(for: screen)
         let height = state.collapsedIslandHeight(for: screen)
         return NSSize(width: width, height: height)
