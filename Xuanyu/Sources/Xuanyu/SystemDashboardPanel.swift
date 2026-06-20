@@ -58,13 +58,13 @@ struct SystemDashboardPanel: View {
                         .foregroundStyle(.white)
                     Text("已用")
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.48))
+                        .foregroundStyle(.white.opacity(0.60))
                 }
                 ProgressView(value: service.memory.percent)
                     .tint(memoryTint)
                 Text("\(service.formattedBytes(service.memory.usedBytes)) / \(service.formattedBytes(service.memory.totalBytes))")
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.58))
+                    .foregroundStyle(.white.opacity(0.70))
                     .lineLimit(1)
             }
         }
@@ -79,7 +79,7 @@ struct SystemDashboardPanel: View {
                         .foregroundStyle(.white)
                     Text(service.weather.city)
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.56))
+                        .foregroundStyle(.white.opacity(0.68))
                         .lineLimit(1)
                 }
                 Text(service.weather.description)
@@ -88,7 +88,7 @@ struct SystemDashboardPanel: View {
                     .lineLimit(1)
                 Text(service.weather.detail.isEmpty ? "自动按网络位置获取" : service.weather.detail)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.46))
+                    .foregroundStyle(.white.opacity(0.70))
                     .lineLimit(1)
             }
         }
@@ -99,7 +99,7 @@ struct SystemDashboardPanel: View {
             VStack(alignment: .leading, spacing: 7) {
                 Text(service.calendarStatus)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.48))
+                    .foregroundStyle(.white.opacity(0.60))
                 if service.events.isEmpty {
                     Text("没有即将开始的日程")
                         .font(.system(size: 13, weight: .semibold))
@@ -110,7 +110,7 @@ struct SystemDashboardPanel: View {
                         HStack(spacing: 8) {
                             Text(event.timeText)
                                 .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.58))
+                                .foregroundStyle(.white.opacity(0.70))
                                 .frame(width: 62, alignment: .leading)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(event.title)
@@ -119,7 +119,7 @@ struct SystemDashboardPanel: View {
                                     .lineLimit(1)
                                 Text(event.calendarName)
                                     .font(.system(size: 10, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.36))
+                                    .foregroundStyle(.white.opacity(0.60))
                                     .lineLimit(1)
                             }
                         }
@@ -135,7 +135,7 @@ struct SystemDashboardPanel: View {
                 ForEach(["日", "一", "二", "三", "四", "五", "六"], id: \.self) { text in
                     Text(text)
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.34))
+                        .foregroundStyle(.white.opacity(0.50))
                         .frame(height: 16)
                 }
                 ForEach(service.calendarDays) { day in
@@ -171,11 +171,7 @@ private struct DashboardCard<Content: View>: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(.white.opacity(0.07), lineWidth: 1)
-        }
+        .glassCard(radius: XYGlass.cardL)
     }
 }
 
@@ -192,7 +188,7 @@ private struct DashboardKV: View {
         HStack(spacing: 8) {
             Text(key)
                 .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.white.opacity(0.36))
+                .foregroundStyle(.white.opacity(0.60))
                 .frame(width: 36, alignment: .leading)
             Text(value)
                 .font(.system(size: 11, weight: .semibold))

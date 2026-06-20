@@ -1,8 +1,11 @@
+import AVFoundation
+import Speech
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct AgentIslandPanel: View {
     var service: AgentService
+    var voiceInput: VoiceInputService
     @Binding var showsConfiguration: Bool
     @Binding var settingsTab: AgentSettingsTab
     @State private var draft = ""
@@ -12,6 +15,7 @@ struct AgentIslandPanel: View {
     @State private var showsLazyModeAlert = false
     @State private var conversationSearchText = ""
     @State private var showsArchivedConversations = false
+    @State private var pendingTimelineScroll: DispatchWorkItem?
 
     var body: some View {
         VStack(spacing: 12) {
@@ -213,7 +217,10 @@ struct AgentIslandPanel: View {
             ScrollView {
                 switch settingsTab {
                 case .model:
-                    modelSettings
+                    VStack(spacing: 12) {
+                        modelSettings
+                        voiceInputSettings
+                    }
                 case .memory:
                     memorySettings
                 case .skills:
@@ -411,6 +418,110 @@ struct AgentIslandPanel: View {
                 .padding(11)
                 .background(lazyModeBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 Text("开启后危险工具自动放行；关闭时继续逐条确认。保存并启动后生效。")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.46))
+            }
+        }
+    }
+
+    private var voiceInputSettings: some View {
+        SettingsSection(title: "语音输入", icon: "waveform.and.mic") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    Picker("识别后端", selection: Binding(
+                        get: { voiceInput.selectedBackend },
+                        set: { voiceInput.setBackend($0) }
+                    )) {
+                        ForEach(VoiceRecognitionBackend.allCases) { backend in
+                            Text(backend.title).tag(backend)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 300)
+
+                    Toggle("提示音", isOn: Binding(
+                        get: { voiceInput.config.soundsEnabled },
+                        set: { voiceInput.setSoundsEnabled($0) }
+                    ))
+                    .toggleStyle(.switch)
+
+                    Spacer(minLength: 8)
+
+                    if voiceInput.modelManager.state == .downloading {
+                        Button("取消下载") {
+                            voiceInput.modelManager.cancelDownload()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    } else if voiceInput.modelManager.isReady {
+                        Button("删除本地模型", role: .destructive) {
+                            voiceInput.deleteLocalModel()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    } else {
+                        Button {
+                            Task { await voiceInput.downloadLocalModel() }
+                        } label: {
+                            Label("下载 239.5 MB SenseVoice", systemImage: "arrow.down.circle")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        Text(voiceInput.modelManager.statusText)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.68))
+                        Spacer()
+                        Text(voiceInput.backendStatusText)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.42))
+                    }
+
+                    if voiceInput.modelManager.state == .downloading {
+                        ProgressView(value: voiceInput.modelManager.progress)
+                            .tint(Color(red: 0.42, green: 0.78, blue: 1))
+                    }
+                }
+                .padding(10)
+                .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                HStack(spacing: 8) {
+                    VoicePermissionBadge(
+                        text: voiceInput.inputMonitoringPermissionText,
+                        allowed: voiceInput.inputMonitoringAuthorized,
+                        actionTitle: voiceInput.inputMonitoringAuthorized ? "设置" : "申请"
+                    ) {
+                        voiceInput.requestInputMonitoringPermission()
+                    }
+                    VoicePermissionBadge(
+                        text: voiceInput.microphonePermissionText,
+                        allowed: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+                        actionTitle: AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined ? "申请" : "设置"
+                    ) {
+                        if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+                            Task { await voiceInput.requestMicrophonePermission() }
+                        } else {
+                            voiceInput.openMicrophoneSettings()
+                        }
+                    }
+                    VoicePermissionBadge(
+                        text: voiceInput.speechPermissionText,
+                        allowed: SFSpeechRecognizer.authorizationStatus() == .authorized,
+                        actionTitle: SFSpeechRecognizer.authorizationStatus() == .notDetermined ? "申请" : "设置"
+                    ) {
+                        if SFSpeechRecognizer.authorizationStatus() == .notDetermined {
+                            Task { await voiceInput.requestAppleSpeechPermission() }
+                        } else {
+                            voiceInput.openSpeechRecognitionSettings()
+                        }
+                    }
+                }
+
+                Text("长按左或右 Command 0.5 秒开始；保持按住说话，松开后立即发送到当前 Agent 对话。")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.white.opacity(0.46))
             }
@@ -646,7 +757,7 @@ struct AgentIslandPanel: View {
                 scrollTimelineToBottom(proxy)
             }
             .onChange(of: service.messages.last?.text ?? "") { _, _ in
-                scrollTimelineToBottom(proxy)
+                scrollTimelineToBottomThrottled(proxy)
             }
         }
     }
@@ -803,6 +914,15 @@ struct AgentIslandPanel: View {
                 scrollTimelineToBottom(proxy, animated: false)
             }
         }
+    }
+
+    private func scrollTimelineToBottomThrottled(_ proxy: ScrollViewProxy) {
+        pendingTimelineScroll?.cancel()
+        let workItem = DispatchWorkItem {
+            scrollTimelineToBottom(proxy)
+        }
+        pendingTimelineScroll = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: workItem)
     }
 
     private func sendDraft() {
@@ -1882,6 +2002,34 @@ private struct AgentCapsuleButtonStyle: ButtonStyle {
             .padding(.horizontal, 10)
             .frame(height: 27)
             .background(.white.opacity(configuration.isPressed ? 0.16 : 0.08), in: Capsule())
+    }
+}
+
+private struct VoicePermissionBadge: View {
+    let text: String
+    let allowed: Bool
+    let actionTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(allowed ? Color.green : Color.orange)
+                    .frame(width: 7, height: 7)
+                Text(text)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .lineLimit(1)
+                Text(actionTitle)
+                    .font(.system(size: 9.5, weight: .bold))
+                    .foregroundStyle(allowed ? .white.opacity(0.42) : Color.orange)
+            }
+            .foregroundStyle(.white.opacity(0.72))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(.white.opacity(0.055), in: Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
 

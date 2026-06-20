@@ -28,7 +28,7 @@ struct MediaIslandPanel: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.white.opacity(0.72))
                     .frame(width: 24, height: 24)
-                    .background(.white.opacity(0.08), in: Circle())
+                    .glassCircle()
             }
             .buttonStyle(.plain)
             .help("刷新 AirPods")
@@ -114,34 +114,36 @@ struct MediaIslandPanel: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 13) {
-            MediaCircleButton(icon: "backward.fill", size: 40, tooltip: "上一首") {
-                Task { await service.previousTrack() }
-            }
-            MediaCircleButton(
-                icon: service.playback.isPlaying ? "pause.fill" : "play.fill",
-                size: 54,
-                tooltip: service.playback.isPlaying ? "暂停" : "播放"
-            ) {
-                Task { await service.togglePlay() }
-            }
-            MediaCircleButton(icon: "forward.fill", size: 40, tooltip: "下一首") {
-                Task { await service.nextTrack() }
-            }
-            MediaCircleButton(icon: "shuffle", size: 40, selected: service.playback.isShuffled, tooltip: "随机播放") {
-                Task { await service.toggleShuffle() }
-            }
-            MediaCircleButton(icon: "repeat", size: 40, selected: service.playback.repeatMode != .off, tooltip: "循环播放") {
-                Task { await service.toggleRepeat() }
-            }
-            if service.playback.supportsFavorite {
+        GlassEffectContainer(spacing: 8) {
+            HStack(spacing: 13) {
+                MediaCircleButton(icon: "backward.fill", size: 40, tooltip: "上一首") {
+                    Task { await service.previousTrack() }
+                }
                 MediaCircleButton(
-                    icon: service.playback.isFavorite ? "star.fill" : "star",
-                    size: 40,
-                    selected: service.playback.isFavorite,
-                    tooltip: "收藏"
+                    icon: service.playback.isPlaying ? "pause.fill" : "play.fill",
+                    size: 54,
+                    tooltip: service.playback.isPlaying ? "暂停" : "播放"
                 ) {
-                    Task { await service.toggleFavorite() }
+                    Task { await service.togglePlay() }
+                }
+                MediaCircleButton(icon: "forward.fill", size: 40, tooltip: "下一首") {
+                    Task { await service.nextTrack() }
+                }
+                MediaCircleButton(icon: "shuffle", size: 40, selected: service.playback.isShuffled, tooltip: "随机播放") {
+                    Task { await service.toggleShuffle() }
+                }
+                MediaCircleButton(icon: "repeat", size: 40, selected: service.playback.repeatMode != .off, tooltip: "循环播放") {
+                    Task { await service.toggleRepeat() }
+                }
+                if service.playback.supportsFavorite {
+                    MediaCircleButton(
+                        icon: service.playback.isFavorite ? "star.fill" : "star",
+                        size: 40,
+                        selected: service.playback.isFavorite,
+                        tooltip: "收藏"
+                    ) {
+                        Task { await service.toggleFavorite() }
+                    }
                 }
             }
         }
@@ -213,9 +215,9 @@ private struct MediaCircleButton: View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: size > 44 ? 22 : 16, weight: .bold))
-                .foregroundStyle(selected ? Color(red: 0.45, green: 1.0, blue: 0.58) : .white.opacity(0.92))
+                .foregroundStyle(selected ? XYGlass.statusRunning : .white.opacity(0.92))
                 .frame(width: size, height: size)
-                .background(.white.opacity(hovering ? 0.20 : 0.11), in: Circle())
+                .glassCircle(tint: hovering ? Color.white.opacity(0.12) : nil)
                 .scaleEffect(hovering ? 1.06 : 1)
         }
         .buttonStyle(.plain)

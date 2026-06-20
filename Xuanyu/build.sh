@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="Xuanyu"
 APP_DISPLAY_NAME="悬屿"
 APP_BUNDLE="$ROOT_DIR/dist/$APP_DISPLAY_NAME.app"
+INSTALL_BUNDLE="/Applications/$APP_DISPLAY_NAME.app"
 
 cd "$ROOT_DIR"
 NODE_BIN="/opt/homebrew/bin/node"
@@ -33,12 +34,23 @@ if [ -d "$BIN_DIR/Xuanyu_Xuanyu.bundle" ]; then
     cp -R "$BIN_DIR/Xuanyu_Xuanyu.bundle" "$APP_BUNDLE/Contents/Resources/"
 fi
 
-codesign --force --deep --sign - "$APP_BUNDLE"
+codesign \
+    --force \
+    --deep \
+    --options runtime \
+    --sign - \
+    --requirements '=designated => identifier "com.xuanyu.app"' \
+    "$APP_BUNDLE"
 
 pkill -x "$APP_NAME" 2>/dev/null || true
-open -n "$APP_BUNDLE" 2>/dev/null || true
+rm -rf "$INSTALL_BUNDLE"
+ditto "$APP_BUNDLE" "$INSTALL_BUNDLE"
+xattr -dr com.apple.quarantine "$INSTALL_BUNDLE" 2>/dev/null || true
+xattr -dr com.apple.provenance "$INSTALL_BUNDLE" 2>/dev/null || true
+codesign --verify --deep --strict "$INSTALL_BUNDLE"
+open "$INSTALL_BUNDLE" 2>/dev/null || true
 PID=""
-for _ in {1..20}; do
+for _ in {1..40}; do
     PID="$(pgrep -x "$APP_NAME" | head -1 || true)"
     if [ -n "$PID" ]; then
         break
@@ -47,14 +59,24 @@ for _ in {1..20}; do
 done
 
 if [ -z "$PID" ]; then
-    nohup "$APP_BUNDLE/Contents/MacOS/$APP_NAME" >/tmp/xuanyu.log 2>&1 &
-    PID="$!"
-    sleep 2
+    nohup "$INSTALL_BUNDLE/Contents/MacOS/$APP_NAME" >/tmp/xuanyu.log 2>&1 &
+    FALLBACK_PID="$!"
+    for _ in {1..40}; do
+        PID="$(pgrep -x "$APP_NAME" | head -1 || true)"
+        if [ -n "$PID" ]; then
+            break
+        fi
+        if ! kill -0 "$FALLBACK_PID" 2>/dev/null; then
+            sleep 0.25
+            continue
+        fi
+        sleep 0.25
+    done
 fi
 
-if ! kill -0 "$PID" 2>/dev/null; then
-    echo "Failed to launch $APP_BUNDLE" >&2
+if [ -z "$PID" ] || ! kill -0 "$PID" 2>/dev/null; then
+    echo "Failed to launch $INSTALL_BUNDLE" >&2
     exit 1
 fi
 
-echo "Running $APP_BUNDLE (PID $PID)"
+echo "Running $INSTALL_BUNDLE (PID $PID)"

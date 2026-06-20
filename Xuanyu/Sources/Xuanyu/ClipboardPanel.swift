@@ -58,12 +58,15 @@ struct ClipboardPanel: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView(.horizontal, showsIndicators: true) {
-                    LazyHStack(alignment: .top, spacing: 10) {
-                        ForEach(filteredItems) { item in
-                            ClipboardCard(item: item, service: service)
+                    // 玻璃卡数量护栏：剪贴板历史可能很多条，超过 20 条时不再上玻璃
+                    GlassEffectContainer(spacing: 10) {
+                        LazyHStack(alignment: .top, spacing: 10) {
+                            ForEach(filteredItems) { item in
+                                ClipboardCard(item: item, service: service, usesGlass: filteredItems.count <= 20)
+                            }
                         }
+                        .padding(.bottom, 5)
                     }
-                    .padding(.bottom, 5)
                 }
             }
         }
@@ -89,17 +92,14 @@ private struct ClipboardEmptyState: View {
                 .minimumScaleFactor(0.82)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(.white.opacity(0.08), lineWidth: 1)
-        }
+        .glassCard(radius: XYGlass.cardS)
     }
 }
 
 private struct ClipboardCard: View {
     let item: ClipboardItem
     @Bindable var service: ClipboardService
+    var usesGlass = true
     @State private var hovering = false
 
     var body: some View {
@@ -142,11 +142,11 @@ private struct ClipboardCard: View {
                 }
                 .padding(10)
                 .frame(width: 146, height: 132, alignment: .topLeading)
-                .background(cardColor.opacity(hovering ? 0.92 : 0.78), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(.white.opacity(hovering ? 0.28 : 0.11), lineWidth: 1)
-                }
+                .modifier(ClipboardCardSurface(
+                    usesGlass: usesGlass,
+                    color: cardColor,
+                    hovering: hovering
+                ))
                 .scaleEffect(hovering ? 1.018 : 1)
             }
             .buttonStyle(.plain)
@@ -276,6 +276,27 @@ private struct ClipboardCard: View {
     }
 }
 
+private struct ClipboardCardSurface: ViewModifier {
+    let usesGlass: Bool
+    let color: Color
+    let hovering: Bool
+
+    func body(content: Content) -> some View {
+        if usesGlass {
+            content.glassCard(
+                radius: XYGlass.cardS,
+                tint: color.opacity(hovering ? 0.85 : 0.65),
+                interactive: true
+            )
+        } else {
+            content.background(
+                color.opacity(hovering ? 0.92 : 0.78),
+                in: RoundedRectangle(cornerRadius: XYGlass.cardS, style: .continuous)
+            )
+        }
+    }
+}
+
 private struct ClipboardKindBadge: View {
     let kind: ClipboardItemKind
 
@@ -323,7 +344,7 @@ private struct ClipboardIconButton: View {
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.white.opacity(hovering ? 0.92 : 0.68))
                 .frame(width: 28, height: 28)
-                .background(.white.opacity(hovering ? 0.13 : 0.07), in: Circle())
+                .glassCircle(tint: hovering ? Color.white.opacity(0.10) : nil)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -390,11 +411,7 @@ private struct ClipboardSearchField: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 26)
-        .background(.white.opacity(0.075), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(.white.opacity(0.08), lineWidth: 1)
-        }
+        .innerSurface(radius: XYGlass.cardS, opacity: 0.10)
     }
 }
 
@@ -407,10 +424,10 @@ private struct ClipboardFilterButton: View {
         Button(action: action) {
             Text(filter.title)
                 .font(.system(size: 10.5, weight: .bold))
-                .foregroundStyle(selected ? .black : .white.opacity(0.56))
+                .foregroundStyle(selected ? .black : .white.opacity(0.68))
                 .padding(.horizontal, 7)
                 .frame(height: 24)
-                .background(selected ? .white : .white.opacity(0.065), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .background(selected ? .white.opacity(1) : .white.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .buttonStyle(.plain)
         .help(filter.title)

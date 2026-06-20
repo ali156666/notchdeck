@@ -1,4 +1,4 @@
-// @ts-check
+// Generated from src/runtime.ts
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { existsSync } from "node:fs";

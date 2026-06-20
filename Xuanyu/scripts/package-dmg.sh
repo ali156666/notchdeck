@@ -41,7 +41,7 @@ if [ -d "$BIN_DIR/Xuanyu_Xuanyu.bundle" ]; then
   cp -R "$BIN_DIR/Xuanyu_Xuanyu.bundle" "$APP_BUNDLE/Contents/Resources/"
 fi
 
-codesign --force --deep --sign - "$APP_BUNDLE"
+codesign --force --deep --options runtime --sign - "$APP_BUNDLE"
 
 cp -R "$APP_BUNDLE" "$STAGING_DIR/$DMG_APP_NAME.app"
 cp "$ROOT_DIR/docs/使用说明.txt" "$STAGING_DIR/使用说明.txt"

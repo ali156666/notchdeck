@@ -1,0 +1,4 @@
+module OnnxRuntime {
+    header "onnxruntime_c_api.h"
+    export *
+}

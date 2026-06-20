@@ -26,6 +26,7 @@
 - OpenAI-compatible 与 Anthropic-compatible 模型接口
 - 应用内配置模型、API key、自定义 skills 和本地 MCP servers
 - 工具调用确认、文件上传、桌面文件拖入识别和附件对话
+- 长按 Command 语音输入，支持 Apple 与离线本地模型；识别后先审核再发送给 Agent
 
 ## 截图
 

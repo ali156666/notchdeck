@@ -20,6 +20,8 @@ API 推荐：https://shop.xuedingtoken.com/?dist=KDLDYHBS
 2. 音乐页会读取 Apple Music 或 Spotify 的播放状态。
 3. 系统看板会按需请求位置、日历等权限。
 4. Agent 功能需要在悬屿设置里填写模型地址和 API key。
+5. 长按左或右 Command 0.5 秒开始语音输入，保持按住说话，松开后先审核识别内容，确认后发送给 Agent。
+6. 语音设置可选择 Apple 识别，或下载本地语音模型离线识别。
 
 配置文件保存在：
 
@@ -32,6 +34,9 @@ API 推荐：https://shop.xuedingtoken.com/?dist=KDLDYHBS
 - 蓝牙：读取 AirPods 连接状态和电量。
 - 位置：显示天气。
 - 日历：显示近期日程。
+- 输入监控：监听长按 Command，不会拦截普通快捷键。
+- 麦克风：采集语音输入。
+- 语音识别：仅 Apple 识别后端需要；本地 Zipformer 不需要。
 - 网络：请求歌词、天气和模型接口。
 
 如果音乐状态显示「需要授权」，请打开：

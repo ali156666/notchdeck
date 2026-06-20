@@ -123,18 +123,26 @@ final class PanelWindowController: NSObject {
     }
 
     private func panelSize(for screen: NSScreen) -> NSSize {
+        if state.voiceInput.prefersLargeHUD {
+            return NSSize(
+                width: min(520, screen.frame.width - 40),
+                height: ScreenDetector.topBarHeight(for: screen) + 132
+            )
+        }
+
         if state.isExpanded {
+            // 多出的 40/28 边距给 SwiftUI 自绘阴影留空间，避免被窗口边缘硬裁
             switch state.mode {
             case .dashboard:
-                return NSSize(width: min(980, screen.frame.width - 24), height: 426)
+                return NSSize(width: min(1020, screen.frame.width - 24), height: 454)
             case .music:
-                return NSSize(width: min(880, screen.frame.width - 24), height: 276)
+                return NSSize(width: min(920, screen.frame.width - 24), height: 304)
             case .quickApps:
-                return NSSize(width: min(980, screen.frame.width - 24), height: 184)
+                return NSSize(width: min(1020, screen.frame.width - 24), height: 212)
             case .clipboard:
-                return NSSize(width: min(760, screen.frame.width - 40), height: 276)
+                return NSSize(width: min(800, screen.frame.width - 40), height: 304)
             case .agent:
-                return NSSize(width: min(920, screen.frame.width - 24), height: min(560, screen.frame.height - 32))
+                return NSSize(width: min(960, screen.frame.width - 24), height: min(588, screen.frame.height - 32))
             }
         }
 

@@ -551,6 +551,142 @@ test("anthropic protocol streams plain messages", async (context) => {
   assert.equal(requestBody.stream, true);
 });
 
+test("openai protocol emits assistant deltas before the SSE stream closes", async (context) => {
+  const configDir = await mkdtemp(join(tmpdir(), "xuanyu-agent-openai-live-stream-"));
+  let finishStream = null;
+  const server = createServer((request, response) => {
+    request.resume();
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "先到的 token" } }] })}\n\n`);
+    finishStream = () => {
+      response.end([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "，后到的 token。" } }] })}`,
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n"));
+    };
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const runtimeChild = startRuntimeChild();
+  context.after(() => {
+    runtimeChild.child.kill();
+    if (server.listening) server.close();
+  });
+
+  runtimeChild.send({
+    type: "configure",
+    apiKey: "test-key",
+    configDir,
+    config: { baseURL: `http://127.0.0.1:${address.port}/v1`, model: "fake-model" },
+  });
+  await runtimeChild.waitFor((event) => event.type === "ready" && event.memoryUsage);
+  runtimeChild.send({ type: "user_message", text: "测试实时流。" });
+  await runtimeChild.waitFor((event) => event.type === "assistant_delta" && /先到/.test(event.delta || ""));
+  assert.equal(runtimeChild.events.some((event) => event.type === "assistant_done"), false);
+  finishStream();
+  await runtimeChild.waitFor((event) => event.type === "assistant_done");
+});
+
+test("late events from an old session do not pollute the reset session history", async (context) => {
+  const configDir = await mkdtemp(join(tmpdir(), "xuanyu-agent-session-routing-"));
+  let finishStream = null;
+  const server = createServer((request, response) => {
+    request.resume();
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "旧会话回答" } }] })}\n\n`);
+    finishStream = () => {
+      response.end(["data: [DONE]", ""].join("\n"));
+    };
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const runtimeChild = startRuntimeChild();
+  context.after(() => {
+    runtimeChild.child.kill();
+    if (server.listening) server.close();
+  });
+
+  runtimeChild.send({
+    type: "configure",
+    apiKey: "test-key",
+    configDir,
+    config: { baseURL: `http://127.0.0.1:${address.port}/v1`, model: "fake-model" },
+  });
+  await runtimeChild.waitFor((event) => event.type === "ready" && event.memoryUsage);
+  runtimeChild.send({ type: "replace_history", sessionId: "conversation-a", messages: [] });
+  await runtimeChild.waitFor((event) => event.type === "history_loaded" && event.sessionId === "conversation-a");
+  runtimeChild.send({ type: "user_message", sessionId: "conversation-a", text: "旧会话任务。" });
+  await runtimeChild.waitFor((event) =>
+    event.type === "assistant_delta" &&
+    event.sessionId === "conversation-a" &&
+    /旧会话回答/.test(event.delta || ""),
+  );
+  runtimeChild.send({ type: "reset", sessionId: "conversation-b" });
+  await runtimeChild.waitFor((event) =>
+    event.type === "ready" &&
+    runtimeChild.events.filter((item) => item.type === "ready").length >= 3,
+  );
+  finishStream();
+  await runtimeChild.waitFor((event) => event.type === "assistant_done" && event.sessionId === "conversation-a");
+
+  runtimeChild.child.stdin.end();
+  await new Promise((resolve) => runtimeChild.child.on("close", resolve));
+  await new Promise((resolve) => server.close(resolve));
+
+  const history = JSON.parse(await readFile(join(configDir, "history.json"), "utf8"));
+  assert.deepEqual(history.messages, []);
+});
+
+test("anthropic protocol emits assistant deltas before the SSE stream closes", async (context) => {
+  const configDir = await mkdtemp(join(tmpdir(), "xuanyu-agent-anthropic-live-stream-"));
+  let finishStream = null;
+  const server = createServer((request, response) => {
+    request.resume();
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.write([
+      `data: ${JSON.stringify({ type: "message_start", message: { id: "msg_live", type: "message", role: "assistant" } })}`,
+      "",
+      `data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}`,
+      "",
+      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Anthropic 先到" } })}`,
+      "",
+      "",
+    ].join("\n"));
+    finishStream = () => {
+      response.end([
+        `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "，再结束。" } })}`,
+        "",
+        `data: ${JSON.stringify({ type: "content_block_stop", index: 0 })}`,
+        "",
+        `data: ${JSON.stringify({ type: "message_stop" })}`,
+        "",
+      ].join("\n"));
+    };
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const runtimeChild = startRuntimeChild();
+  context.after(() => {
+    runtimeChild.child.kill();
+    if (server.listening) server.close();
+  });
+
+  runtimeChild.send({
+    type: "configure",
+    apiKey: "anthropic-key",
+    configDir,
+    config: { apiProtocol: "anthropic", baseURL: `http://127.0.0.1:${address.port}/v1`, model: "claude-test" },
+  });
+  await runtimeChild.waitFor((event) => event.type === "ready" && event.memoryUsage);
+  runtimeChild.send({ type: "user_message", text: "测试 Anthropic 实时流。" });
+  await runtimeChild.waitFor((event) => event.type === "assistant_delta" && /Anthropic 先到/.test(event.delta || ""));
+  assert.equal(runtimeChild.events.some((event) => event.type === "assistant_done"), false);
+  finishStream();
+  await runtimeChild.waitFor((event) => event.type === "assistant_done");
+});
+
 test("anthropic protocol executes tool_use and returns final text", async (context) => {
   const configDir = await mkdtemp(join(tmpdir(), "xuanyu-agent-anthropic-tools-"));
   let requestCount = 0;
@@ -654,6 +790,63 @@ test("lazy mode auto-approves dangerous tool gates", async (context) => {
   assert.match(await readFile(join(configDir, "skills", "lazy-approved", "SKILL.md"), "utf8"), /Lazy Approved/);
 });
 
+test("shell tool times out instead of hanging the agent loop", async (context) => {
+  const configDir = await mkdtemp(join(tmpdir(), "xuanyu-agent-shell-timeout-"));
+  const hangingCommand = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("setTimeout(() => {}, 5000)")}`;
+  let requestCount = 0;
+  let toolMessage = null;
+  const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => { body += chunk.toString(); });
+    request.on("end", () => {
+      requestCount += 1;
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      if (requestCount === 1) {
+        response.end([
+          `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-hang", type: "function", function: { name: "shell", arguments: JSON.stringify({ command: hangingCommand, timeoutMs: 1000 }) } }] } }] })}`,
+          "",
+          "data: [DONE]",
+          "",
+        ].join("\n"));
+      } else {
+        toolMessage = JSON.parse(body).messages.find((message) => message.role === "tool");
+        response.end([
+          `data: ${JSON.stringify({ choices: [{ delta: { content: "超时已处理。" } }] })}`,
+          "",
+          "data: [DONE]",
+          "",
+        ].join("\n"));
+      }
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const runtimeChild = startRuntimeChild();
+  context.after(() => {
+    runtimeChild.child.kill();
+    if (server.listening) server.close();
+  });
+
+  runtimeChild.send({
+    type: "configure",
+    apiKey: "test-key",
+    configDir,
+    config: { baseURL: `http://127.0.0.1:${address.port}/v1`, model: "fake-model", lazyModeEnabled: true },
+  });
+  await runtimeChild.waitFor((event) => event.type === "ready" && event.memoryUsage);
+  runtimeChild.send({ type: "user_message", text: "运行一个会卡住的 shell。" });
+  const toolResult = await runtimeChild.waitFor((event) => event.type === "tool_result" && event.id === "call-hang", 2500);
+  await runtimeChild.waitFor((event) => event.type === "assistant_done", 2500);
+
+  runtimeChild.child.stdin.end();
+  await new Promise((resolve) => runtimeChild.child.on("close", resolve));
+  await new Promise((resolve) => server.close(resolve));
+
+  assert.equal(requestCount, 2);
+  assert.equal(JSON.parse(toolResult.content).timedOut, true);
+  assert.equal(JSON.parse(toolMessage.content).timedOut, true);
+});
+
 test("agent tool loop persists curated memory and complete session records", async () => {
   const configDir = await mkdtemp(join(tmpdir(), "xuanyu-agent-loop-"));
   let requestCount = 0;
@@ -699,8 +892,79 @@ test("agent tool loop persists curated memory and complete session records", asy
   assert.match(sessions, /记住这个项目使用 SwiftUI/);
   assert.match(sessions, /记住了/);
   assert.equal(runtimeChild.events.some((event) => event.type === "memory_updated"), true);
-  assert.equal(runtimeChild.events.some((event) => event.type === "assistant_delta" && /Let me check/.test(event.delta || "")), false);
+  assert.equal(runtimeChild.events.some((event) => event.type === "assistant_delta" && /Let me check/.test(event.delta || "")), true);
+  assert.equal(runtimeChild.events.some((event) => event.type === "assistant_segment_done"), true);
   assert.equal(runtimeChild.events.some((event) => event.type === "assistant_delta" && event.delta === "记住了。"), true);
+});
+
+test("auto-approved tool calls run in parallel and keep model result order", async (context) => {
+  const configDir = await mkdtemp(join(tmpdir(), "xuanyu-agent-parallel-tools-"));
+  const scriptA = "setTimeout(function(){process.stdout.write('first')}, 600)";
+  const scriptB = "setTimeout(function(){process.stdout.write('second')}, 600)";
+  const commandA = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(scriptA)}`;
+  const commandB = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(scriptB)}`;
+  let requestCount = 0;
+  let toolMessages = [];
+  const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => { body += chunk.toString(); });
+    request.on("end", () => {
+      requestCount += 1;
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      if (requestCount === 1) {
+        response.end([
+          `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [
+            { index: 0, id: "call-first", type: "function", function: { name: "shell", arguments: JSON.stringify({ command: commandA }) } },
+            { index: 1, id: "call-second", type: "function", function: { name: "shell", arguments: JSON.stringify({ command: commandB }) } },
+          ] } }] })}`,
+          "",
+          "data: [DONE]",
+          "",
+        ].join("\n"));
+      } else {
+        toolMessages = JSON.parse(body).messages.filter((message) => message.role === "tool");
+        response.end([
+          `data: ${JSON.stringify({ choices: [{ delta: { content: "并行工具完成。" } }] })}`,
+          "",
+          "data: [DONE]",
+          "",
+        ].join("\n"));
+      }
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const runtimeChild = startRuntimeChild();
+  context.after(() => {
+    runtimeChild.child.kill();
+    if (server.listening) server.close();
+  });
+
+  runtimeChild.send({
+    type: "configure",
+    apiKey: "test-key",
+    configDir,
+    config: { baseURL: `http://127.0.0.1:${address.port}/v1`, model: "fake-model" },
+  });
+  await runtimeChild.waitFor((event) => event.type === "ready" && event.memoryUsage);
+  runtimeChild.send({ type: "user_message", text: "并行跑两个只读 shell。" });
+  await runtimeChild.waitFor((event) => event.type === "assistant_done", 3000);
+
+  runtimeChild.child.stdin.end();
+  await new Promise((resolve) => runtimeChild.child.on("close", resolve));
+  await new Promise((resolve) => server.close(resolve));
+
+  assert.equal(requestCount, 2);
+  const firstPendingIndex = runtimeChild.events.findIndex((event) => event.type === "tool_pending" && event.id === "call-first");
+  const secondPendingIndex = runtimeChild.events.findIndex((event) => event.type === "tool_pending" && event.id === "call-second");
+  const firstResultIndex = runtimeChild.events.findIndex((event) => event.type === "tool_result" && (event.id === "call-first" || event.id === "call-second"));
+  assert.equal(firstPendingIndex >= 0, true);
+  assert.equal(secondPendingIndex >= 0, true);
+  assert.equal(firstPendingIndex < firstResultIndex, true);
+  assert.equal(secondPendingIndex < firstResultIndex, true);
+  assert.equal(toolMessages.length, 2);
+  assert.match(JSON.parse(toolMessages[0].content).stdout, /first/);
+  assert.match(JSON.parse(toolMessages[1].content).stdout, /second/);
 });
 
 test("tool loop budget falls back to a final no-tool answer", async () => {
