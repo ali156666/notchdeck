@@ -7,9 +7,9 @@
     <title>悬屿 · 让 MacBook 刘海动起来</title>
     <meta
       name="description"
-      content="悬屿让你的 MacBook 刘海动起来。自定义模型、长期记忆、Skills 与 MCP，都收在 Mac 顶栏的一个干净入口里。"
+      content="悬屿让你的 MacBook 刘海动起来。Command 语音输入、自定义模型、长期记忆、Skills 与 MCP，都收在 Mac 顶栏的一个干净入口里。"
     />
-    <meta name="keywords" content="悬屿, NotchDeck, MacBook 刘海, macOS AI 助手, 动态岛, 顶栏工具, Skills, MCP" />
+    <meta name="keywords" content="悬屿, NotchDeck, MacBook 刘海, macOS AI 助手, 动态岛, 顶栏工具, 语音输入, 语音识别, Skills, MCP" />
     <meta name="robots" content="index, follow, max-image-preview:large" />
     <meta name="baiduspider" content="index, follow" />
     <meta name="application-name" content="悬屿" />
@@ -21,7 +21,7 @@
     <meta property="og:title" content="悬屿 · 让 MacBook 刘海动起来" />
     <meta
       property="og:description"
-      content="悬屿让你的 MacBook 刘海动起来。自定义模型、长期记忆、Skills 与 MCP，都收在 Mac 顶栏的一个干净入口里。"
+      content="悬屿让你的 MacBook 刘海动起来。Command 语音输入、自定义模型、长期记忆、Skills 与 MCP，都收在 Mac 顶栏的一个干净入口里。"
     />
     <meta property="og:url" content="https://notchdeck.xyz/" />
     <meta property="og:image" content="https://notchdeck.xyz/public/shots/dashboard.png?v=202606081209" />
@@ -32,7 +32,7 @@
     <meta name="twitter:title" content="悬屿 · 让 MacBook 刘海动起来" />
     <meta
       name="twitter:description"
-      content="自定义模型、长期记忆、Skills 与 MCP，都收在 Mac 顶栏的一个干净入口里。"
+      content="Command 语音输入、自定义模型、长期记忆、Skills 与 MCP，都收在 Mac 顶栏的一个干净入口里。"
     />
     <meta name="twitter:image" content="https://notchdeck.xyz/public/shots/dashboard.png?v=202606081209" />
     <link rel="preload" as="image" href="../public/brand/lingdong-eyed-mark.png" />
@@ -52,7 +52,7 @@
         "alternateName": "NotchDeck",
         "url": "https://notchdeck.xyz/",
         "inLanguage": "zh-CN",
-        "description": "悬屿让你的 MacBook 刘海动起来。自定义模型、长期记忆、Skills 与 MCP，都收在 Mac 顶栏的一个干净入口里。"
+        "description": "悬屿让你的 MacBook 刘海动起来。Command 语音输入、自定义模型、长期记忆、Skills 与 MCP，都收在 Mac 顶栏的一个干净入口里。"
       }
     </script>
     <script type="application/ld+json">
@@ -67,7 +67,7 @@
         "url": "https://notchdeck.xyz/",
         "image": "https://notchdeck.xyz/public/shots/dashboard.png?v=202606081209",
         "downloadUrl": "https://github.com/ali156666/notchdeck/releases/download/v1.0.25/NotchDeck-1.0.25.dmg",
-        "description": "悬屿让你的 MacBook 刘海动起来。自定义模型、长期记忆、Skills 与 MCP，都收在 Mac 顶栏的一个干净入口里。",
+        "description": "悬屿让你的 MacBook 刘海动起来。Command 语音输入、自定义模型、长期记忆、Skills 与 MCP，都收在 Mac 顶栏的一个干净入口里。",
         "offers": {
           "@type": "Offer",
           "price": "0",
@@ -103,7 +103,7 @@
             <span>让你的 MacBook</span>
             <span>刘海动起来</span>
           </h1>
-          <p class="hero-copy">自定义模型、长期记忆、Skills 与 MCP，都贴着顶部走。</p>
+          <p class="hero-copy">按住 Command 说话，审核后交给 Agent；模型、记忆、Skills 与 MCP，都贴着顶部走。</p>
           <div class="hero-actions" aria-label="首屏操作">
             <a class="primary-action" href="#workflows">查看能力</a>
           </div>
@@ -113,6 +113,7 @@
               <span><i class="status-dot blue" aria-hidden="true"></i>自定义模型</span>
               <span><i class="status-dot green" aria-hidden="true"></i>长期记忆</span>
               <span><i class="status-dot amber" aria-hidden="true"></i>Skills 与 MCP</span>
+              <span><i class="status-dot purple" aria-hidden="true"></i>语音输入</span>
             </div>
           </div>
         </div>
@@ -123,6 +124,10 @@
           <article>
             <span>模型</span>
             <strong>自定义模型，自由更换更高级的模型。</strong>
+          </article>
+          <article>
+            <span>语音</span>
+            <strong>长按 Command 说话，审核后再发送给 Agent。</strong>
           </article>
           <article>
             <span>记忆</span>
@@ -219,9 +224,36 @@
           <p class="eyebrow">其他功能</p>
           <h2 id="more-title">更多能力，贴着刘海展开。</h2>
           <div class="feature-stack">
-            <article class="feature-row">
+            <article class="feature-row voice-row">
               <div class="feature-copy">
                 <span class="feature-index">01</span>
+                <h3>语音输入</h3>
+                <p>长按左右 Command 0.5 秒开始说话，松开后先审核识别文本，再交给当前 Agent 会话。</p>
+              </div>
+              <figure class="feature-shot voice-feature" aria-label="悬屿语音输入状态示意">
+                <div class="voice-demo">
+                  <span class="voice-orb" aria-hidden="true"></span>
+                  <div class="voice-pill">
+                    <span class="voice-key">⌘</span>
+                    <div>
+                      <strong>正在听，松开 Command 发送</strong>
+                      <span>Apple / 本地 SenseVoice</span>
+                    </div>
+                  </div>
+                  <div class="voice-wave" aria-hidden="true">
+                    <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+                  </div>
+                  <div class="voice-review">
+                    <span>识别内容</span>
+                    <p>帮我整理今天的会议要点，并生成待办清单。</p>
+                    <strong>审核后发送给 Agent</strong>
+                  </div>
+                </div>
+              </figure>
+            </article>
+            <article class="feature-row">
+              <div class="feature-copy">
+                <span class="feature-index">02</span>
                 <h3>剪贴板</h3>
                 <p>文本、图片、文件自动归档，临时内容不用再翻窗口找。</p>
               </div>
@@ -231,7 +263,7 @@
             </article>
             <article class="feature-row">
               <div class="feature-copy">
-                <span class="feature-index">02</span>
+                <span class="feature-index">03</span>
                 <h3>歌词悬浮</h3>
                 <p>收起时也能显示当前歌词，贴着刘海轻轻浮出，不挡窗口、不抢焦点。</p>
               </div>
@@ -241,7 +273,7 @@
             </article>
             <article class="feature-row">
               <div class="feature-copy">
-                <span class="feature-index">03</span>
+                <span class="feature-index">04</span>
                 <h3>音乐</h3>
                 <p>进度、控制和 AirPods 电量贴着顶部走，播放状态一眼看见。</p>
               </div>
@@ -251,7 +283,7 @@
             </article>
             <article class="feature-row">
               <div class="feature-copy">
-                <span class="feature-index">04</span>
+                <span class="feature-index">05</span>
                 <h3>面板</h3>
                 <p>系统、内存、天气、日程集中展示，Mac 状态不再散落。</p>
               </div>
@@ -273,7 +305,7 @@
         <div class="closing-inner">
           <p class="closing-brand">悬屿</p>
           <h2 id="closing-title">让刘海动起来。</h2>
-          <p>把更强的模型、更懂你的记忆和可扩展能力，放进 MacBook 顶部。</p>
+          <p>把语音输入、更强的模型、更懂你的记忆和可扩展能力，放进 MacBook 顶部。</p>
           <div class="closing-actions">
             <a class="primary-action" href="#workflows">再看一遍能力</a>
           </div>
