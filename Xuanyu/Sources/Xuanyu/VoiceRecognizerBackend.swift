@@ -555,3 +555,26 @@ final class VoiceAudioNormalizer {
         return Array(UnsafeBufferPointer(start: channel, count: Int(outputBuffer.frameLength)))
     }
 }
+
+final class VoiceAudioNormalizerCache {
+    private var cachedFormatDescription = ""
+    private var cachedNormalizer: VoiceAudioNormalizer?
+
+    func normalize(_ inputBuffer: AVAudioPCMBuffer) -> [Float]? {
+        let formatDescription = Self.describe(inputBuffer.format)
+        if cachedNormalizer == nil || cachedFormatDescription != formatDescription {
+            cachedNormalizer = VoiceAudioNormalizer(inputFormat: inputBuffer.format)
+            cachedFormatDescription = formatDescription
+        }
+        return cachedNormalizer?.normalize(inputBuffer)
+    }
+
+    private static func describe(_ format: AVAudioFormat) -> String {
+        [
+            String(format.sampleRate),
+            String(format.channelCount),
+            String(format.commonFormat.rawValue),
+            String(format.isInterleaved),
+        ].joined(separator: ":")
+    }
+}

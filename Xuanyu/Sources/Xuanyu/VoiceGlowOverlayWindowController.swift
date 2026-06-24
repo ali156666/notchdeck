@@ -110,32 +110,48 @@ private struct VoiceGlowOverlayView: View {
     @State private var wakeStartedAt: Date?
 
     private let wakeDuration: TimeInterval = 0.24
+    private let animationFrameInterval: TimeInterval = 1.0 / 15.0
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
-            GeometryReader { proxy in
-                let wakeProgress = wakeProgress(at: timeline.date)
-                let breath = breathValue(at: timeline.date)
-                let flowPhase = timeline.date.timeIntervalSinceReferenceDate
-                ZStack {
-                    if shouldShowVoiceGlow {
-                        VoiceWaterFlowEdgeGlow(
-                            palette: palette,
-                            intensity: glowIntensity,
-                            wakeProgress: wakeProgress,
-                            breath: breath,
-                            flowPhase: flowPhase,
-                            flowStrength: flowStrength,
-                            flowSpeed: flowSpeed
-                        )
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .transition(.opacity)
+        GeometryReader { proxy in
+            ZStack {
+                if shouldShowVoiceGlow {
+                    Group {
+                        if shouldAnimateVoiceGlow {
+                            TimelineView(.animation(minimumInterval: animationFrameInterval)) { timeline in
+                                let wakeProgress = wakeProgress(at: timeline.date)
+                                let breath = breathValue(at: timeline.date)
+                                let flowPhase = timeline.date.timeIntervalSinceReferenceDate
+                                VoiceWaterFlowEdgeGlow(
+                                    palette: palette,
+                                    intensity: glowIntensity,
+                                    wakeProgress: wakeProgress,
+                                    breath: breath,
+                                    flowPhase: flowPhase,
+                                    flowStrength: flowStrength,
+                                    flowSpeed: flowSpeed
+                                )
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                            }
+                        } else {
+                            VoiceWaterFlowEdgeGlow(
+                                palette: palette,
+                                intensity: glowIntensity,
+                                wakeProgress: 1,
+                                breath: 0.40,
+                                flowPhase: 0,
+                                flowStrength: min(flowStrength, 0.18),
+                                flowSpeed: 0
+                            )
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                        }
                     }
+                    .transition(.opacity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .animation(.easeOut(duration: 0.18), value: shouldShowVoiceGlow)
-                .animation(.easeInOut(duration: 0.18), value: state.voiceInput.state)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(.easeOut(duration: 0.18), value: shouldShowVoiceGlow)
+            .animation(.easeInOut(duration: 0.18), value: state.voiceInput.state)
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
@@ -146,6 +162,10 @@ private struct VoiceGlowOverlayView: View {
         .onChange(of: shouldShowVoiceGlow) { _, visible in
             syncWakeVisibility(visible)
         }
+    }
+
+    private var shouldAnimateVoiceGlow: Bool {
+        state.voiceInput.state == .recording
     }
 
     private var shouldShowVoiceGlow: Bool {

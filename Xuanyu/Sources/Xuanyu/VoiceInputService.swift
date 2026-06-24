@@ -482,10 +482,9 @@ final class VoiceInputService {
 
     private func startAudioCapture(using backend: VoiceRecognizerBackend) throws {
         let inputNode = audioEngine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
+        let inputFormat = inputNode.inputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0,
-              inputFormat.channelCount > 0,
-              let normalizer = VoiceAudioNormalizer(inputFormat: inputFormat)
+              inputFormat.channelCount > 0
         else {
             throw VoiceInputError.noMicrophoneInput
         }
@@ -494,8 +493,9 @@ final class VoiceInputService {
             inputNode.removeTap(onBus: 0)
             hasInstalledAudioTap = false
         }
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            guard let samples = normalizer.normalize(buffer), !samples.isEmpty else { return }
+        let normalizerCache = VoiceAudioNormalizerCache()
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
+            guard let samples = normalizerCache.normalize(buffer), !samples.isEmpty else { return }
             backend.acceptAudio(samples: samples, sampleRate: 16_000)
             let level = Self.audioLevel(samples)
             Task { @MainActor in
