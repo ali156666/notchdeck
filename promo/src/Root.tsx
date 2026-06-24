@@ -84,7 +84,7 @@ const TimelineLayer: React.FC = () => {
         shot="agent-skills"
         headline="本地 Agent"
         subline="常驻顶栏。"
-        caption="Skills、MCP、文件拖入与确认流。"
+        caption="语音审核输入、Skills、MCP、文件拖入与确认流。"
         accent={palette.blue}
         scale={0.58}
         y={118}

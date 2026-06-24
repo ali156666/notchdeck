@@ -17,15 +17,17 @@ struct QuickAppsPanel: View {
             }
 
             ScrollView(.horizontal, showsIndicators: true) {
-                LazyHStack(spacing: 10) {
-                    ForEach(service.apps) { app in
-                        QuickAppCard(app: app, service: service)
+                GlassEffectContainer(spacing: 12) {
+                    LazyHStack(spacing: 10) {
+                        ForEach(service.apps) { app in
+                            QuickAppCard(app: app, service: service)
+                        }
+                        AddQuickAppCard {
+                            service.chooseApplications()
+                        }
                     }
-                    AddQuickAppCard {
-                        service.chooseApplications()
-                    }
+                    .padding(.bottom, 4)
                 }
-                .padding(.bottom, 4)
             }
         }
         .padding(.horizontal, 18)
@@ -57,11 +59,9 @@ private struct QuickAppCard: View {
                 }
                 .padding(8)
                 .frame(width: 82, height: 82)
-                .background(.white.opacity(hovering ? 0.15 : 0.09), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(.white.opacity(hovering ? 0.20 : 0.08), lineWidth: 1)
-                }
+                .glassCard(radius: XYGlass.cardM,
+                           tint: hovering ? Color.white.opacity(0.10) : nil,
+                           interactive: true)
                 .scaleEffect(hovering ? 1.025 : 1)
             }
             .buttonStyle(.plain)
@@ -103,12 +103,12 @@ private struct AddQuickAppCard: View {
                 Text("添加")
                     .font(.system(size: 11, weight: .bold))
             }
-            .foregroundStyle(.white.opacity(hovering ? 0.88 : 0.56))
+            .foregroundStyle(.white.opacity(hovering ? 0.88 : 0.68))
             .frame(width: 82, height: 82)
-            .background(.white.opacity(hovering ? 0.13 : 0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .innerSurface(radius: XYGlass.cardM, opacity: hovering ? 0.13 : 0.07)
             .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(.white.opacity(hovering ? 0.24 : 0.10), style: StrokeStyle(lineWidth: 1, dash: [6]))
+                RoundedRectangle(cornerRadius: XYGlass.cardM, style: .continuous)
+                    .stroke(.white.opacity(hovering ? 0.24 : 0.12), style: StrokeStyle(lineWidth: 1, dash: [6]))
             }
         }
         .buttonStyle(.plain)

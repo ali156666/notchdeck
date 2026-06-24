@@ -56,13 +56,22 @@ const runtime = {
   sessionId: randomUUID(),
   mcpClients: new Map(),
   pendingPermissions: new Map(),
+  activeProcesses: new Set(),
+  cancelledSessions: new Set(),
   abortController: null,
+  fileSearchCache: new Map(),
+  backgroundTasks: new Set(),
 };
 
 const MAX_ATTACHMENT_TEXT_BYTES = 180_000;
 const MAX_TOOL_TURNS = 20;
+const DEFAULT_LOCAL_PROCESS_TIMEOUT_MS = 30_000;
+const MAX_LOCAL_PROCESS_TIMEOUT_MS = 120_000;
 const AUTO_COMPACT_RATIO = 0.8;
 const COMPACT_KEEP_RECENT_MESSAGES = 12;
+const STREAM_DELTA_FLUSH_MS = 40;
+const STREAM_DELTA_FLUSH_CHARS = 240;
+const FILE_SEARCH_CACHE_TTL_MS = 15_000;
 const TEXT_EXTENSIONS = new Set([
   ".c", ".cc", ".cpp", ".css", ".csv", ".go", ".h", ".hpp", ".html", ".java", ".js", ".json", ".jsx",
   ".kt", ".log", ".m", ".md", ".mm", ".php", ".plist", ".py", ".rb", ".rs", ".sh", ".sql", ".swift",
@@ -71,6 +80,41 @@ const TEXT_EXTENSIONS = new Set([
 
 function send(event) {
   process.stdout.write(`${JSON.stringify(event)}\n`);
+}
+
+function createAssistantDeltaEmitter(options = {}) {
+  const messageId = options.messageId || "assistant-current";
+  const sessionId = options.sessionId || runtime.sessionId;
+  const emitDelta = options.emitDelta !== false;
+  let pending = "";
+  let timer = null;
+
+  const flush = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (!emitDelta || !pending) return;
+    send({ type: "assistant_delta", sessionId, messageId, delta: pending });
+    pending = "";
+  };
+
+  const schedule = () => {
+    if (timer || !emitDelta) return;
+    timer = setTimeout(flush, STREAM_DELTA_FLUSH_MS);
+    timer.unref?.();
+  };
+
+  return {
+    push(delta) {
+      const value = String(delta || "");
+      if (!emitDelta || !value) return;
+      pending += value;
+      if (pending.length >= STREAM_DELTA_FLUSH_CHARS) flush();
+      else schedule();
+    },
+    flush,
+  };
 }
 
 function normalizeAssistantText(text) {
@@ -468,14 +512,13 @@ async function describeAttachment(attachment, index) {
 export async function buildAttachmentContext(attachments) {
   const values = (Array.isArray(attachments) ? attachments : []).filter((attachment) => attachment && attachment.path);
   if (!values.length) return "";
-  const descriptions = [];
-  for (let index = 0; index < values.length; index += 1) {
+  const descriptions = await Promise.all(values.map(async (attachment, index) => {
     try {
-      descriptions.push(await describeAttachment(values[index], index));
+      return await describeAttachment(attachment, index);
     } catch (error) {
-      descriptions.push(`### ${index + 1}. ${values[index]?.name || values[index]?.path || "file"}\n- status: read failed: ${error.message || String(error)}`);
+      return `### ${index + 1}. ${attachment?.name || attachment?.path || "file"}\n- status: read failed: ${error.message || String(error)}`;
     }
-  }
+  }));
   return [
     "用户上传或拖入了以下本机文件。先根据文件类型、路径、大小和可读取内容识别文件，再回答用户问题。",
     ...descriptions,
@@ -496,7 +539,16 @@ export function classifyToolRisk(tool, args = {}, policyOverride) {
   // Global auto-approve modes (only when no explicit policy override is forcing a base evaluation).
   if (!policyOverride && (lazy || policy === "never" || policy === "on-failure")) return "auto";
   if (policyOverride === "never" || policyOverride === "on-failure") return "auto";
-  if (tool.kind === "skill_read" || tool.kind === "list_skills" || tool.kind === "file_search") return "auto";
+  if (
+    tool.kind === "skill_read" ||
+    tool.kind === "list_skills" ||
+    tool.kind === "file_search" ||
+    tool.kind === "memory_manage" ||
+    tool.kind === "session_search" ||
+    tool.kind === "propose_skill_evolution" ||
+    tool.kind === "list_evolution_candidates"
+  ) return "auto";
+  if (tool.kind === "apply_skill_evolution") return "confirm";
   if (tool.kind === "shell" || tool.kind === "skill_script") {
     const analysis = analyzeCommand(String(args?.command ?? args?.script ?? ""));
     return (analysis.writes || analysis.network || analysis.destructive || analysis.unknown) ? "confirm" : "auto";
@@ -614,19 +666,30 @@ async function walkFilePaths(root, current, acc) {
   return acc;
 }
 
+async function cachedFilePaths(root) {
+  const absoluteRoot = resolve(root);
+  const cached = runtime.fileSearchCache.get(absoluteRoot);
+  if (cached && Date.now() - cached.createdAt < FILE_SEARCH_CACHE_TTL_MS) {
+    return cached.paths;
+  }
+  const paths = await walkFilePaths(absoluteRoot, absoluteRoot, []);
+  runtime.fileSearchCache.set(absoluteRoot, { createdAt: Date.now(), paths });
+  return paths;
+}
+
 function fileSearchLimit(limit) {
   return Math.min(Math.max(Number(limit) || FILE_SEARCH_DEFAULT_LIMIT, 1), FILE_SEARCH_HARD_CAP);
 }
 
 export async function searchFileNames(root, query, { limit = FILE_SEARCH_DEFAULT_LIMIT } = {}) {
   const cap = fileSearchLimit(limit);
-  const allPaths = await walkFilePaths(root, root, []);
+  const allPaths = await cachedFilePaths(root);
   return fuzzyRank(allPaths, query).slice(0, cap);
 }
 
 export async function searchFileContent(root, query, { limit = FILE_SEARCH_DEFAULT_LIMIT } = {}) {
   const cap = fileSearchLimit(limit);
-  const allPaths = await walkFilePaths(root, root, []);
+  const allPaths = await cachedFilePaths(root);
   const lowerQuery = String(query).toLowerCase();
   const results = [];
   for (const rel of allPaths) {
@@ -976,18 +1039,35 @@ async function ensureSessionEmbeddingIndex(records) {
   return missing.length ? await readEmbeddingIndex() : indexEntries;
 }
 
-async function appendSessionMessage(message) {
+async function appendSessionMessage(message, sessionId = runtime.sessionId) {
   if (!runtime.sessionsPath) return;
   await mkdir(dirname(runtime.sessionsPath), { recursive: true });
   const record = {
     id: randomUUID(),
-    sessionId: runtime.sessionId,
+    sessionId,
     createdAt: new Date().toISOString(),
     ...message,
   };
   await appendFile(runtime.sessionsPath, `${JSON.stringify(record)}\n`);
-  await indexSessionRecord(record);
+  scheduleBackgroundTask(indexSessionRecord(record));
   return record;
+}
+
+function isCurrentSession(sessionId) {
+  return String(sessionId || "") === String(runtime.sessionId || "");
+}
+
+function isCancelledSession(sessionId) {
+  return runtime.cancelledSessions.has(String(sessionId || ""));
+}
+
+function scheduleBackgroundTask(promise) {
+  const task = Promise.resolve(promise).catch((error) => {
+    send({ type: "tool_result", id: randomUUID(), tool: "background", ok: false, content: error?.message || String(error) });
+  });
+  runtime.backgroundTasks.add(task);
+  task.finally(() => runtime.backgroundTasks.delete(task));
+  return task;
 }
 
 async function readSessionRecords() {
@@ -1234,7 +1314,7 @@ async function refreshSkills() {
   });
 }
 
-async function applySkillEvolution(args) {
+async function applySkillEvolution(args, sessionId = runtime.sessionId) {
   const candidates = await loadEvolutionCandidates();
   const candidate = candidates.find((item) => item.id === args.id);
   if (!candidate) return { ok: false, content: `Unknown evolution candidate: ${args.id}` };
@@ -1256,6 +1336,7 @@ async function applySkillEvolution(args) {
       await sendEvolutionAudit();
       return { ok: true, content: JSON.stringify({ id: candidate.id, skill: candidate.skill, status: candidate.status }) };
     },
+    sessionId,
   );
 }
 
@@ -1331,6 +1412,7 @@ function openAITools() {
             skill: { type: "string" },
             script: { type: "string" },
             args: { type: "array", items: { type: "string" } },
+            timeoutMs: { type: "integer", minimum: 1000, maximum: MAX_LOCAL_PROCESS_TIMEOUT_MS },
           },
           required: ["skill", "script"],
           additionalProperties: false,
@@ -1347,6 +1429,7 @@ function openAITools() {
           properties: {
             command: { type: "string" },
             cwd: { type: "string" },
+            timeoutMs: { type: "integer", minimum: 1000, maximum: MAX_LOCAL_PROCESS_TIMEOUT_MS },
           },
           required: ["command"],
           additionalProperties: false,
@@ -1486,10 +1569,11 @@ function parseToolArgs(text) {
   return parseJSON(text || "{}", {});
 }
 
-async function askPermission(tool, args, summary) {
+async function askPermission(tool, args, summary, sessionId = runtime.sessionId) {
   const id = randomUUID();
   send({
     type: "permission_request",
+    sessionId,
     id,
     tool: tool.displayName || tool.name,
     source: tool.source || tool.kind,
@@ -1501,9 +1585,9 @@ async function askPermission(tool, args, summary) {
   });
 }
 
-async function runWithPermission(tool, args, summary, action) {
+async function runWithPermission(tool, args, summary, action, sessionId = runtime.sessionId) {
   if (classifyToolRisk(tool, args) === "confirm") {
-    const approved = await askPermission(tool, args, summary);
+    const approved = await askPermission(tool, args, summary, sessionId);
     if (!approved) {
       return { ok: false, denied: true, content: "User denied this tool call." };
     }
@@ -1514,6 +1598,7 @@ async function runWithPermission(tool, args, summary, action) {
   if (classifyToolRisk(tool, args, "on-request") === "confirm") {
     send({
       type: "permission_auto_approved",
+      sessionId,
       tool: tool.displayName || tool.name,
       source: tool.source || tool.kind,
       summary,
@@ -1523,19 +1608,65 @@ async function runWithPermission(tool, args, summary, action) {
   return action();
 }
 
-function captureChild(child) {
+function terminateChild(child, signal = "SIGTERM") {
+  if (!child || child.killed) return;
+  try {
+    if (child.pid) process.kill(-child.pid, signal);
+  } catch {
+    try { child.kill(signal); } catch { /* ignore */ }
+  }
+}
+
+function terminateActiveProcesses(signal = "SIGTERM") {
+  for (const child of [...runtime.activeProcesses]) {
+    terminateChild(child, signal);
+  }
+}
+
+function localProcessTimeoutMs(value) {
+  return boundedNumber(value, DEFAULT_LOCAL_PROCESS_TIMEOUT_MS, 1_000, MAX_LOCAL_PROCESS_TIMEOUT_MS);
+}
+
+function captureChild(child, { timeoutMs = DEFAULT_LOCAL_PROCESS_TIMEOUT_MS } = {}) {
   return new Promise((resolveResult) => {
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      terminateChild(child, "SIGTERM");
+      const killTimer = setTimeout(() => {
+        if (!settled) terminateChild(child, "SIGKILL");
+      }, 1_000);
+      killTimer.unref?.();
+    }, localProcessTimeoutMs(timeoutMs));
+    timeout.unref?.();
+
+    const resolveOnce = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      runtime.activeProcesses.delete(child);
+      resolveResult(result);
+    };
+
     child.on("error", (error) => {
-      resolveResult({ ok: false, content: JSON.stringify({ error: error?.message || String(error) }) });
+      resolveOnce({ ok: false, content: JSON.stringify({ error: error?.message || String(error), timedOut, timeoutMs: localProcessTimeoutMs(timeoutMs) }) });
     });
     if (child.stdout) child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
     if (child.stderr) child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
-    child.on("close", (code) => {
-      resolveResult({
-        ok: code === 0,
-        content: JSON.stringify({ exitCode: code, stdout: stdout.slice(-12000), stderr: stderr.slice(-8000) }),
+    child.on("close", (code, signal) => {
+      resolveOnce({
+        ok: code === 0 && !timedOut,
+        content: JSON.stringify({
+          exitCode: code,
+          signal,
+          timedOut,
+          timeoutMs: localProcessTimeoutMs(timeoutMs),
+          stdout: stdout.slice(-12000),
+          stderr: stderr.slice(-8000),
+        }),
       });
     });
   });
@@ -1543,23 +1674,28 @@ function captureChild(child) {
 
 function spawnLocal(file, argv, { cwd } = {}) {
   const workdir = cwd || runtime.configDir || process.cwd();
-  return spawn(file, argv, { cwd: workdir, env: process.env });
+  const child = spawn(file, argv, { cwd: workdir, env: process.env, detached: true });
+  runtime.activeProcesses.add(child);
+  child.on("close", () => runtime.activeProcesses.delete(child));
+  child.on("error", () => runtime.activeProcesses.delete(child));
+  return child;
 }
 
 function runLocalProcess(file, argv, options) {
-  return captureChild(spawnLocal(file, argv, options));
+  return captureChild(spawnLocal(file, argv, options), { timeoutMs: options?.timeoutMs });
 }
 
-async function runShell(args) {
+async function runShell(args, sessionId = runtime.sessionId) {
   return runWithPermission(
     { kind: "shell", name: "shell", displayName: "shell", source: "local" },
     args,
     args.command,
-    () => runLocalProcess("/bin/zsh", ["-lc", String(args.command || "")], { cwd: args.cwd }),
+    () => runLocalProcess("/bin/zsh", ["-lc", String(args.command || "")], { cwd: args.cwd, timeoutMs: args.timeoutMs }),
+    sessionId,
   );
 }
 
-async function runSkillScript(args) {
+async function runSkillScript(args, sessionId = runtime.sessionId) {
   const skill = runtime.skills.find((item) => item.name === args.skill);
   if (!skill) return { ok: false, content: `Unknown skill: ${args.skill}` };
   if (!skill.absolutePath) {
@@ -1574,7 +1710,8 @@ async function runSkillScript(args) {
     { kind: "skill_script", name: "run_skill_script", displayName: "skill script", source: skill.name },
     args,
     `${skill.name}/${args.script}`,
-    () => runLocalProcess(scriptPath, Array.isArray(args.args) ? args.args.map(String) : [], { cwd: skillDir }),
+    () => runLocalProcess(scriptPath, Array.isArray(args.args) ? args.args.map(String) : [], { cwd: skillDir, timeoutMs: args.timeoutMs }),
+    sessionId,
   );
 }
 
@@ -1731,13 +1868,13 @@ async function commitApplyPatch(plan) {
   return { written };
 }
 
-async function runApplyPatch(args) {
+async function runApplyPatch(args, sessionId = runtime.sessionId) {
   const parsed = parseApplyPatch(String(args.input ?? args.patch ?? ""));
   if (!parsed.ok) return { ok: false, content: JSON.stringify({ error: parsed.error }) };
   const cwd = resolve(String(args.cwd || runtime.configDir || process.cwd()));
   const planned = await planApplyPatch(parsed.ops, { cwd });
   if (!planned.ok) return { ok: false, content: JSON.stringify({ error: planned.error }) };
-  send({ type: "patch_preview", diff: planned.diff, files: planned.summary });
+  send({ type: "patch_preview", sessionId, diff: planned.diff, files: planned.summary });
   return runWithPermission(
     { kind: "apply_patch", name: "apply_patch", displayName: "apply_patch", source: "local" },
     args,
@@ -1750,10 +1887,11 @@ async function runApplyPatch(args) {
         return { ok: false, content: JSON.stringify({ error: error?.message || String(error) }) };
       }
     },
+    sessionId,
   );
 }
 
-async function runBuiltInTool(name, args) {
+async function runBuiltInTool(name, args, sessionId = runtime.sessionId) {
   if (name === "list_skills") {
     return { ok: true, content: JSON.stringify(runtime.skills.map(({ name: skillName, title, summary, path }) => ({ name: skillName, title, summary, path }))) };
   }
@@ -1761,15 +1899,15 @@ async function runBuiltInTool(name, args) {
     const skill = runtime.skills.find((item) => item.name === args.name);
     return skill ? { ok: true, content: skill.content } : { ok: false, content: `Unknown skill: ${args.name}` };
   }
-  if (name === "run_skill_script") return runSkillScript(args);
-  if (name === "shell") return runShell(args);
-  if (name === "apply_patch") return runApplyPatch(args);
+  if (name === "run_skill_script") return runSkillScript(args, sessionId);
+  if (name === "shell") return runShell(args, sessionId);
+  if (name === "apply_patch") return runApplyPatch(args, sessionId);
   if (name === "file_search") return runFileSearch(args);
   if (name === "memory_manage") return manageMemory(args);
   if (name === "session_search") return searchSessions(args);
   if (name === "propose_skill_evolution") return proposeSkillEvolution(args);
   if (name === "list_evolution_candidates") return listEvolutionCandidates(args);
-  if (name === "apply_skill_evolution") return applySkillEvolution(args);
+  if (name === "apply_skill_evolution") return applySkillEvolution(args, sessionId);
   return null;
 }
 
@@ -1974,20 +2112,24 @@ async function startMCPServers() {
   for (const client of runtime.mcpClients.values()) client.stop();
   runtime.mcpClients.clear();
   const servers = Array.isArray(runtime.config.mcpServers) ? runtime.config.mcpServers : [];
-  for (const server of servers) {
-    if (server.enabled === false) continue;
+  const enabledServers = servers.filter((server) => server.enabled !== false);
+  const connected = await Promise.all(enabledServers.map(async (server, index) => {
     try {
-      const name = sanitizeToolName(server.name || server.id || `server_${runtime.mcpClients.size + 1}`);
+      const name = sanitizeToolName(server.name || server.id || `server_${index + 1}`);
       let client;
       if (server.transport === "stdio" || server.type === "stdio") client = new StdioMCPClient({ ...server, name });
       else if (server.transport === "sse" || server.type === "sse") client = await connectSSEMCP({ ...server, name });
       else client = new HTTPMCPClient({ ...server, name });
       await client.start();
-      runtime.mcpClients.set(name, client);
       send({ type: "tool_result", id: randomUUID(), tool: `mcp:${name}`, ok: true, content: `connected ${client.tools.length} tools` });
+      return [name, client];
     } catch (error) {
       send({ type: "error", message: `MCP ${server.name || server.id || "server"} failed: ${error.message}` });
+      return null;
     }
+  }));
+  for (const entry of connected.filter(Boolean)) {
+    runtime.mcpClients.set(entry[0], entry[1]);
   }
 }
 
@@ -2121,6 +2263,8 @@ function accumulateAnthropicEvent(event, blocks, toolCalls) {
 
 async function streamAnthropicMessages(messages, tools, options = {}) {
   runtime.abortController = new AbortController();
+  const sessionId = options.sessionId || runtime.sessionId;
+  const deltaEmitter = createAssistantDeltaEmitter(options);
   const activeTools = options.allowTools === false ? [] : anthropicToolsFromOpenAI(tools);
   const payload = anthropicPayloadMessages(messages);
   const model = options.modelOverride || runtime.config.model;
@@ -2156,7 +2300,7 @@ async function streamAnthropicMessages(messages, tools, options = {}) {
     {
       retries: 3,
       signal: runtime.abortController.signal,
-      onRetry: ({ attempt, delayMs, status }) => send({ type: "model_retry", attempt, delayMs, status }),
+      onRetry: ({ attempt, delayMs, status }) => send({ type: "model_retry", sessionId, attempt, delayMs, status }),
     },
   );
   if (!response.ok && activeTools.length) {
@@ -2187,14 +2331,16 @@ async function streamAnthropicMessages(messages, tools, options = {}) {
         const data = line.slice(5).trim();
         if (!data || data === "[DONE]") continue;
         const event = parseJSON(data);
-        text += accumulateAnthropicEvent(event, blocks, toolCalls);
+        const deltaText = accumulateAnthropicEvent(event, blocks, toolCalls);
+        if (deltaText) {
+          text += deltaText;
+          deltaEmitter.push(deltaText);
+        }
       }
     }
   }
+  deltaEmitter.flush();
   const normalizedText = normalizeAssistantText(text);
-  if (options.emitDelta !== false && !toolCalls.length && normalizedText) {
-    send({ type: "assistant_delta", messageId: "assistant-current", delta: normalizedText });
-  }
   return { text: normalizedText, toolCalls };
 }
 
@@ -2203,6 +2349,8 @@ async function streamChat(messages, tools, options = {}) {
     return streamAnthropicMessages(messages, tools, options);
   }
   runtime.abortController = new AbortController();
+  const sessionId = options.sessionId || runtime.sessionId;
+  const deltaEmitter = createAssistantDeltaEmitter(options);
   const activeTools = options.allowTools === false ? [] : tools;
   const model = options.modelOverride || runtime.config.model;
   const maxTokens = options.maxTokensOverride || runtime.config.maxTokens;
@@ -2236,13 +2384,13 @@ async function streamChat(messages, tools, options = {}) {
     {
       retries: 3,
       signal: runtime.abortController.signal,
-      onRetry: ({ attempt, delayMs, status }) => send({ type: "model_retry", attempt, delayMs, status }),
+      onRetry: ({ attempt, delayMs, status }) => send({ type: "model_retry", sessionId, attempt, delayMs, status }),
     },
   );
   if (!response.ok && activeTools.length) {
     const firstError = await response.text();
     if (/tool|function|schema|tool_choice/i.test(firstError)) {
-      send({ type: "tool_result", id: randomUUID(), tool: "model", ok: false, content: "model does not support tools; falling back to plain chat" });
+      send({ type: "tool_result", sessionId, id: randomUUID(), tool: "model", ok: false, content: "model does not support tools; falling back to plain chat" });
       response = await request(false);
     } else {
       throw new Error(`Model HTTP ${response.status}: ${firstError.slice(0, 1000)}`);
@@ -2269,20 +2417,19 @@ async function streamChat(messages, tools, options = {}) {
         const delta = event?.choices?.[0]?.delta || {};
         if (delta.content) {
           text += delta.content;
+          deltaEmitter.push(delta.content);
         }
         accumulateToolCall(toolCalls, delta.tool_calls);
       }
     }
   }
+  deltaEmitter.flush();
   const filteredToolCalls = toolCalls.filter((call) => call.function?.name);
   const normalizedText = normalizeAssistantText(text);
-  if (options.emitDelta !== false && !filteredToolCalls.length && normalizedText) {
-    send({ type: "assistant_delta", messageId: "assistant-current", delta: normalizedText });
-  }
   return { text: normalizedText, toolCalls: filteredToolCalls };
 }
 
-async function finishWithoutMoreTools(loopMessages) {
+async function finishWithoutMoreTools(loopMessages, sessionId = runtime.sessionId) {
   const finalMessages = [
     ...loopMessages,
     {
@@ -2290,32 +2437,37 @@ async function finishWithoutMoreTools(loopMessages) {
       content: "The tool turn budget is exhausted. Do not call any more tools. Give the user the best concise answer from the tool results already available. If evidence is incomplete, say exactly what is missing and ask for the next instruction.",
     },
   ];
-  const result = await streamChat(finalMessages, [], { allowTools: false });
+  const messageId = randomUUID();
+  const result = await streamChat(finalMessages, [], { allowTools: false, sessionId, messageId });
   const text = result.text || "工具调用已达到上限。我已经停止继续调用工具；请告诉我下一步要继续查什么，或让我基于已有结果整理结论。";
   if (!result.text) {
-    send({ type: "assistant_delta", messageId: "assistant-current", delta: text });
+    send({ type: "assistant_delta", sessionId, messageId, delta: text });
   }
-  runtime.messages.push({ role: "assistant", content: text });
-  await appendSessionMessage({ role: "assistant", content: text });
-  await saveHistory();
-  if (runtime.config.autoTitleEnabled !== false) {
+  if (isCurrentSession(sessionId)) {
+    runtime.messages.push({ role: "assistant", content: text });
+    await saveHistory();
+  }
+  await appendSessionMessage({ role: "assistant", content: text }, sessionId);
+  if (runtime.config.autoTitleEnabled !== false && isCurrentSession(sessionId)) {
     const firstUser = runtime.messages.find((message) => message.role === "user")?.content || "";
     send({ type: "conversation_title", sessionId: runtime.sessionId, title: generateConversationTitle(firstUser, text) });
   }
-  const lastUser = [...runtime.messages].reverse().find((message) => message.role === "user")?.content || "";
-  await autoExtractMemoryAfterTurn(lastUser, text);
-  send({ type: "assistant_done", messageId: "assistant-current" });
+  if (isCurrentSession(sessionId)) {
+    const lastUser = [...runtime.messages].reverse().find((message) => message.role === "user")?.content || "";
+    await autoExtractMemoryAfterTurn(lastUser, text);
+  }
+  send({ type: "assistant_done", sessionId, messageId });
 }
 
-async function executeToolCall(call) {
+async function executeToolCall(call, sessionId = runtime.sessionId) {
   const name = call.function.name;
   const args = parseToolArgs(call.function.arguments);
   const id = call.id || randomUUID();
-  send({ type: "tool_pending", id, tool: name, arguments: args });
+  send({ type: "tool_pending", sessionId, id, tool: name, arguments: args });
   try {
-    const builtIn = await runBuiltInTool(name, args);
+    const builtIn = await runBuiltInTool(name, args, sessionId);
     if (builtIn) {
-      send({ type: "tool_result", id, tool: name, ok: builtIn.ok, content: builtIn.content });
+      send({ type: "tool_result", sessionId, id, tool: name, ok: builtIn.ok, content: builtIn.content });
       return builtIn.content;
     }
     for (const client of runtime.mcpClients.values()) {
@@ -2329,18 +2481,78 @@ async function executeToolCall(call) {
           const response = await client.call(tool, args);
           return { ok: true, content: JSON.stringify(response) };
         },
+        sessionId,
       );
-      send({ type: "tool_result", id, tool: name, ok: result.ok, content: result.content });
+      send({ type: "tool_result", sessionId, id, tool: name, ok: result.ok, content: result.content });
       return result.content;
     }
     const content = `Unknown tool: ${name}`;
-    send({ type: "tool_result", id, tool: name, ok: false, content });
+    send({ type: "tool_result", sessionId, id, tool: name, ok: false, content });
     return content;
   } catch (error) {
     const content = error.message || String(error);
-    send({ type: "tool_result", id, tool: name, ok: false, content });
+    send({ type: "tool_result", sessionId, id, tool: name, ok: false, content });
     return content;
   }
+}
+
+function builtInToolDescriptor(name) {
+  if (name === "list_skills") return { kind: "list_skills", name, displayName: name, source: "local" };
+  if (name === "read_skill") return { kind: "skill_read", name, displayName: name, source: "local" };
+  if (name === "run_skill_script") return { kind: "skill_script", name, displayName: name, source: "local" };
+  if (name === "shell") return { kind: "shell", name, displayName: name, source: "local" };
+  if (name === "apply_patch") return { kind: "apply_patch", name, displayName: name, source: "local" };
+  if (name === "file_search") return { kind: "file_search", name, displayName: name, source: "local" };
+  if (name === "memory_manage") return { kind: "memory_manage", name, displayName: name, source: "local" };
+  if (name === "session_search") return { kind: "session_search", name, displayName: name, source: "local" };
+  if (name === "propose_skill_evolution") return { kind: "propose_skill_evolution", name, displayName: name, source: "local" };
+  if (name === "list_evolution_candidates") return { kind: "list_evolution_candidates", name, displayName: name, source: "local" };
+  if (name === "apply_skill_evolution") return { kind: "apply_skill_evolution", name, displayName: "应用 Skill 演化", source: "self-evolution" };
+  return null;
+}
+
+function descriptorForToolCall(call) {
+  const name = call?.function?.name || "";
+  const builtIn = builtInToolDescriptor(name);
+  if (builtIn) return builtIn;
+  for (const client of runtime.mcpClients.values()) {
+    const tool = client.tools.find((item) => item.openAIName === name);
+    if (tool) return { ...tool, kind: "mcp", displayName: tool.name, source: `mcp:${client.name}` };
+  }
+  return { kind: "unknown", name, displayName: name, source: "model" };
+}
+
+function toolCallNeedsSequentialExecution(call) {
+  const descriptor = descriptorForToolCall(call);
+  const args = parseToolArgs(call?.function?.arguments);
+  return classifyToolRisk(descriptor, args) === "confirm";
+}
+
+async function executeToolCalls(calls, sessionId = runtime.sessionId) {
+  const toolCalls = Array.isArray(calls) ? calls : [];
+  const results = new Array(toolCalls.length);
+  let parallel = [];
+
+  const flushParallel = async () => {
+    if (!parallel.length) return;
+    const batch = parallel;
+    parallel = [];
+    await Promise.all(batch.map(async ({ call, index }) => {
+      results[index] = await executeToolCall(call, sessionId);
+    }));
+  };
+
+  for (let index = 0; index < toolCalls.length; index += 1) {
+    const call = toolCalls[index];
+    if (toolCallNeedsSequentialExecution(call)) {
+      await flushParallel();
+      results[index] = await executeToolCall(call, sessionId);
+    } else {
+      parallel.push({ call, index });
+    }
+  }
+  await flushParallel();
+  return results;
 }
 
 function compactModelName() {
@@ -2357,9 +2569,10 @@ function messagesForSummary(messages) {
     .join("\n\n---\n\n");
 }
 
-async function compactHistory(reason = "manual") {
+async function compactHistory(reason = "manual", sessionId = runtime.sessionId) {
   if (!runtime.configured) throw new Error("悬屿 runtime is not configured.");
   if (!runtime.apiKey) throw new Error("Missing API key.");
+  const compactSessionId = String(sessionId || runtime.sessionId || "");
 
   const normalized = normalizeHistoryMessages(runtime.messages).slice(-historyCountLimit());
   const keepCount = Math.min(COMPACT_KEEP_RECENT_MESSAGES, normalized.length);
@@ -2373,7 +2586,7 @@ async function compactHistory(reason = "manual") {
   send({
     type: "compact_started",
     reason,
-    sessionId: runtime.sessionId,
+    sessionId: compactSessionId,
     beforeCount: normalized.length,
     keepCount,
   });
@@ -2396,6 +2609,7 @@ async function compactHistory(reason = "manual") {
   ], [], {
     allowTools: false,
     emitDelta: false,
+    sessionId: compactSessionId,
     modelOverride: compactModelName(),
     maxTokensOverride: compactMaxTokens(),
   });
@@ -2406,31 +2620,33 @@ async function compactHistory(reason = "manual") {
     return false;
   }
 
-  runtime.contextSummary = summary;
-  runtime.messages = recentMessages;
-  await saveHistory();
+  if (isCurrentSession(compactSessionId)) {
+    runtime.contextSummary = summary;
+    runtime.messages = recentMessages;
+    await saveHistory();
+  }
   send({
     type: "history_compacted",
     reason,
-    sessionId: runtime.sessionId,
-    contextSummary: runtime.contextSummary,
-    messages: runtime.messages,
+    sessionId: compactSessionId,
+    contextSummary: summary,
+    messages: recentMessages,
     beforeCount: normalized.length,
-    afterCount: runtime.messages.length,
-    usage: contextUsageFor(runtime.messages, runtime.contextSummary, contextCharLimit()),
+    afterCount: recentMessages.length,
+    usage: contextUsageFor(recentMessages, summary, contextCharLimit()),
   });
   return true;
 }
 
-async function compactIfNeeded() {
+async function compactIfNeeded(sessionId = runtime.sessionId) {
   const usage = contextUsageFor(runtime.messages, runtime.contextSummary, contextCharLimit());
-  send({ type: "context_usage", ...usage });
+  send({ type: "context_usage", sessionId, ...usage });
   if (!shouldAutoCompact(runtime.messages, runtime.contextSummary, contextCharLimit())) return false;
   if (normalizeHistoryMessages(runtime.messages).length <= COMPACT_KEEP_RECENT_MESSAGES) return false;
   try {
-    return await compactHistory("auto");
+    return await compactHistory("auto", sessionId);
   } catch (error) {
-    send({ type: "compact_error", reason: "auto", message: error.message || String(error) });
+    send({ type: "compact_error", sessionId, reason: "auto", message: error.message || String(error) });
     return false;
   }
 }
@@ -2502,44 +2718,63 @@ async function configure(payload) {
   await sendEvolutionAudit();
 }
 
-async function runAgent(userText, attachments = []) {
+async function runAgent(userText, attachments = [], sessionId = runtime.sessionId) {
   if (!runtime.configured) throw new Error("悬屿 runtime is not configured.");
   if (!runtime.apiKey) throw new Error("Missing API key.");
+  const runSessionId = String(sessionId || runtime.sessionId || randomUUID());
+  runtime.cancelledSessions.delete(runSessionId);
   const attachmentContext = await buildAttachmentContext(attachments);
   const messageText = attachmentContext ? `${userText}\n\n${attachmentContext}` : userText;
-  runtime.messages.push({ role: "user", content: messageText });
-  await appendSessionMessage({ role: "user", content: messageText });
-  await compactIfNeeded();
+  if (isCurrentSession(runSessionId)) {
+    runtime.messages.push({ role: "user", content: messageText });
+  }
+  await appendSessionMessage({ role: "user", content: messageText }, runSessionId);
+  if (isCurrentSession(runSessionId)) {
+    await compactIfNeeded(runSessionId);
+  }
   const tools = openAITools();
   let loopMessages = contextMessagesForTurn(messageText);
   for (let turn = 0; turn < MAX_TOOL_TURNS; turn += 1) {
-    const result = await streamChat(loopMessages, tools);
+    if (isCancelledSession(runSessionId)) return;
+    const messageId = randomUUID();
+    const result = await streamChat(loopMessages, tools, { sessionId: runSessionId, messageId });
+    if (isCancelledSession(runSessionId)) return;
     if (!result.toolCalls.length) {
-      runtime.messages.push({ role: "assistant", content: result.text });
-      await appendSessionMessage({ role: "assistant", content: result.text });
-      await saveHistory();
-      if (runtime.config.autoTitleEnabled !== false) {
-        const firstUser = runtime.messages.find((message) => message.role === "user")?.content || userText;
-        send({ type: "conversation_title", sessionId: runtime.sessionId, title: generateConversationTitle(firstUser, result.text) });
+      if (isCurrentSession(runSessionId)) {
+        runtime.messages.push({ role: "assistant", content: result.text });
+        await saveHistory();
       }
-      await autoExtractMemoryAfterTurn(messageText, result.text);
-      send({ type: "assistant_done", messageId: "assistant-current" });
+      await appendSessionMessage({ role: "assistant", content: result.text }, runSessionId);
+      if (runtime.config.autoTitleEnabled !== false && isCurrentSession(runSessionId)) {
+        const firstUser = runtime.messages.find((message) => message.role === "user")?.content || userText;
+        send({ type: "conversation_title", sessionId: runSessionId, title: generateConversationTitle(firstUser, result.text) });
+      }
+      if (isCurrentSession(runSessionId)) {
+        await autoExtractMemoryAfterTurn(messageText, result.text);
+      }
+      send({ type: "assistant_done", sessionId: runSessionId, messageId });
       return;
     }
     const assistant = { role: "assistant", content: result.text || null, tool_calls: result.toolCalls };
     loopMessages.push(assistant);
-    for (const call of result.toolCalls) {
-      const content = await executeToolCall(call);
-      loopMessages.push({ role: "tool", tool_call_id: call.id, content });
+    if (result.text) {
+      send({ type: "assistant_segment_done", sessionId: runSessionId, messageId });
+    }
+    const toolResults = await executeToolCalls(result.toolCalls, runSessionId);
+    if (isCancelledSession(runSessionId)) return;
+    for (let index = 0; index < result.toolCalls.length; index += 1) {
+      const call = result.toolCalls[index];
+      loopMessages.push({ role: "tool", tool_call_id: call.id, content: toolResults[index] });
     }
   }
-  await finishWithoutMoreTools(loopMessages);
+  await finishWithoutMoreTools(loopMessages, runSessionId);
 }
 
 async function reset(event = {}) {
   runtime.messages = [];
   runtime.contextSummary = "";
   runtime.sessionId = String(event.sessionId || randomUUID());
+  runtime.cancelledSessions.delete(runtime.sessionId);
   await loadMemorySnapshot();
   await saveHistory();
   const candidates = await loadEvolutionCandidates();
@@ -2593,12 +2828,12 @@ async function handleInput(event) {
   if (event.type === "replace_history") return replaceHistory(event);
   if (event.type === "compact") {
     try {
-      return compactHistory(event.reason || "manual");
+      return compactHistory(event.reason || "manual", event.sessionId || runtime.sessionId);
     } catch (error) {
-      return send({ type: "compact_error", reason: event.reason || "manual", message: error.message || String(error) });
+      return send({ type: "compact_error", sessionId: event.sessionId || runtime.sessionId, reason: event.reason || "manual", message: error.message || String(error) });
     }
   }
-  if (event.type === "user_message") return runAgent(event.text || "", event.attachments || []);
+  if (event.type === "user_message") return runAgent(event.text || "", event.attachments || [], event.sessionId || runtime.sessionId);
   if (event.type === "approve_tool" || event.type === "deny_tool") {
     const resolver = runtime.pendingPermissions.get(event.id);
     if (resolver) {
@@ -2608,8 +2843,15 @@ async function handleInput(event) {
     return;
   }
   if (event.type === "cancel") {
+    const sessionId = String(event.sessionId || runtime.sessionId);
+    runtime.cancelledSessions.add(sessionId);
     runtime.abortController?.abort();
-    send({ type: "assistant_done", messageId: "assistant-current" });
+    terminateActiveProcesses();
+    for (const resolver of runtime.pendingPermissions.values()) {
+      resolver(false);
+    }
+    runtime.pendingPermissions.clear();
+    send({ type: "assistant_done", sessionId, messageId: "assistant-current" });
     return;
   }
   if (event.type === "reset") return reset(event);
@@ -2627,7 +2869,8 @@ if (fileURLToPath(import.meta.url) === process.argv[1]) {
     try {
       await handleInput(event);
     } catch (error) {
-      send({ type: "error", message: error.message || String(error) });
+      if (error?.name === "AbortError") return;
+      send({ type: "error", sessionId: event.sessionId || runtime.sessionId, message: error.message || String(error) });
     }
   });
   send({ type: "ready", skills: [], mcpServers: [], historyCount: 0 });

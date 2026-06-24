@@ -14,7 +14,7 @@
   <img src="./Xuanyu/docs/images/hero.png" alt="悬屿官网首屏截图" width="860">
 </p>
 
-悬屿是一个 macOS 顶栏悬浮面板应用。它贴着 MacBook 顶部运行，把音乐控制、AirPods 电量、剪贴板、快捷启动、系统看板、番茄钟和本地 Agent 收在一个干净入口里。
+悬屿是一个 macOS 顶栏悬浮面板应用。它贴着 MacBook 顶部运行，把音乐控制、AirPods 电量、剪贴板、快捷启动、系统看板、番茄钟、Command 语音输入和本地 Agent 收在一个干净入口里。
 
 ## 功能
 
@@ -26,6 +26,8 @@
 - OpenAI-compatible 与 Anthropic-compatible 模型接口
 - 应用内配置模型、API key、自定义 skills 和本地 MCP servers
 - 工具调用确认、文件上传、桌面文件拖入识别和附件对话
+- 长按左右 Command 0.5 秒语音输入，支持 Apple 语音识别与离线 SenseVoice 本地模型
+- 松开 Command 后先审核识别文本，确认后再发送给 Agent 执行
 
 ## 截图
 

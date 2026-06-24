@@ -10,6 +10,7 @@ final class IslandAppState {
     let quickLaunch = QuickLaunchService()
     let dashboard = SystemDashboardService()
     let clipboard = ClipboardService()
+    let voiceInput = VoiceInputService()
     var isExpanded = false
     var mode: IslandMode = .dashboard
     var agentShowsSettings = false
@@ -22,14 +23,16 @@ final class IslandAppState {
     }
 
     var usesTallCollapsedDropdown: Bool {
-        return shouldShowCollapsedLyrics ||
+        return voiceInput.shouldDisplay ||
+        shouldShowCollapsedLyrics ||
         pomodoro.status == .running ||
         pomodoro.status == .completed ||
         pomodoroCollapsedReminder != nil
     }
 
     var usesIdleCollapsedHeight: Bool {
-        return !agent.isBusy &&
+        return !voiceInput.shouldDisplay &&
+        !agent.isBusy &&
         agentCollapsedReminder == nil &&
         pomodoro.status != .running &&
         pomodoro.status != .completed &&

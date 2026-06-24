@@ -28,7 +28,7 @@
   <img src="./docs/images/hero.png" alt="悬屿官网首屏截图" width="860">
 </p>
 
-悬屿是一个 macOS 顶栏悬浮面板应用。它贴着 MacBook 顶部运行，把音乐控制、AirPods 电量、剪贴板、快捷启动、系统看板、番茄钟和本地 Agent 收在一个干净入口里。
+悬屿是一个 macOS 顶栏悬浮面板应用。它贴着 MacBook 顶部运行，把音乐控制、AirPods 电量、剪贴板、快捷启动、系统看板、番茄钟、Command 语音输入和本地 Agent 收在一个干净入口里。
 
 <p align="center">
   官网地址：<a href="https://notchdeck.xyz/">https://notchdeck.xyz/</a>
@@ -66,6 +66,16 @@
 - 应用内配置模型、API key、自定义 skills 和本地 MCP servers
 - 工具调用确认、文件上传、桌面文件拖入识别和附件对话
 - 本地对话、记忆与会话管理
+- 长按左右 Command 0.5 秒开始语音输入，松开后进入审核，确认后发送给 Agent
+- 支持 Apple 语音识别与按需下载的离线 SenseVoice 本地语音模型
+
+### 语音输入
+
+- 长按左或右 Command 0.5 秒进入语音输入；短按 Command、`⌘C`、`⌘V`、`⌘Tab` 等组合键不会触发。
+- 按住 Command 说话，松开后进入识别与审核；用户点击“发送”后，文本才会交给当前 Agent 会话。
+- 默认使用 Apple 语音识别，适合中英混合输入，需要系统语音识别权限。
+- 可在 Agent 设置中下载本地 SenseVoice 模型离线识别；模型约 239.5 MB，只需要麦克风权限。
+- 录音时会显示红色麦克风、实时文字和屏幕边缘光圈；识别失败、空文本或权限拒绝不会发送空任务。
 
 ## 截图
 
@@ -132,6 +142,9 @@ API key 由应用内 Agent 设置面板写入本机配置文件。这个文件�
 | Bluetooth | 读取 AirPods 连接状态与电量 |
 | Calendar | 在系统看板显示近期日程 |
 | Location | 获取当前位置，用于天气信息 |
+| Input Monitoring | 监听左右 Command 长按触发语音输入 |
+| Microphone | 采集语音输入 |
+| Speech Recognition | Apple 语音识别后端需要；本地 SenseVoice 不需要 |
 | Network | 请求歌词、天气和模型接口 |
 
 ## 项目结构
@@ -193,6 +206,10 @@ swift test
 cd AgentRuntime
 npm test
 ```
+
+### 长按 Command 没有进入语音输入
+
+先确认系统设置里已经允许“输入监控”和“麦克风”。如果使用 Apple 后端，还需要允许“语音识别”；如果使用本地 SenseVoice 后端，请先在 Agent 设置里下载模型。
 
 ## 贡献
 

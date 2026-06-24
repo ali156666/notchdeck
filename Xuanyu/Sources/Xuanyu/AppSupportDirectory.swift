@@ -10,4 +10,7 @@ enum AppSupportDirectory {
         root.appendingPathComponent("agent", isDirectory: true)
     }
 
+    static var voice: URL {
+        root.appendingPathComponent("voice", isDirectory: true)
+    }
 }

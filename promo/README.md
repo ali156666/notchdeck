@@ -14,7 +14,7 @@
 工程入口：
 
 - `src/Root.tsx`：Remotion 成片。
-- `landing/index.html`：旧版宣传网页。
+- `landing/index.html`：官网静态页，包含 Command 语音输入、Agent、Skills、MCP 和其他功能卖点。
 - `hyperframes/index.html`：HyperFrames + GSAP 动态分镜源文件。
 - `DESIGN.md`：视觉规则。
 

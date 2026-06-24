@@ -30,6 +30,8 @@ final class AgentService {
     @ObservationIgnored private var process: Process?
     @ObservationIgnored private var inputPipe: Pipe?
     @ObservationIgnored private var outputBuffer = ""
+    @ObservationIgnored private var pendingConversationSave: DispatchWorkItem?
+    @ObservationIgnored private var pendingConversationSaveId = ""
 
     var isConfigured: Bool {
         !config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
@@ -61,6 +63,7 @@ final class AgentService {
     }
 
     func stop() {
+        cancelScheduledConversationSave()
         process?.terminate()
         process = nil
         inputPipe = nil
@@ -168,6 +171,7 @@ final class AgentService {
         }
         ensureActiveConversation()
         startRuntimeIfNeeded()
+        guard canWriteRuntimeInput else { return }
         let displayText = trimmed.isEmpty ? "请识别这些文件。" : trimmed
         messages.append(AgentMessage(role: .user, text: displayText, attachments: attachments))
         saveActiveConversation()
@@ -179,6 +183,7 @@ final class AgentService {
         }
         writeJSON([
             "type": "user_message",
+            "sessionId": activeConversationId,
             "text": displayText,
             "attachments": attachments.map(\.dictionaryValue),
         ])
@@ -203,19 +208,20 @@ final class AgentService {
     }
 
     func cancel() {
-        writeJSON(["type": "cancel"])
+        writeJSON(["type": "cancel", "sessionId": activeConversationId])
         status = .ready
         statusText = "已停止生成"
-        if let index = messages.lastIndex(where: { $0.role == .assistant && $0.isStreaming }) {
+        for index in messages.indices where messages[index].role == .assistant && messages[index].isStreaming {
             messages[index].isStreaming = false
         }
+        flushScheduledConversationSave()
     }
 
     func startNewConversation() {
         if isBusy {
-            writeJSON(["type": "cancel"])
+            writeJSON(["type": "cancel", "sessionId": activeConversationId])
         }
-        saveActiveConversation()
+        flushScheduledConversationSave()
         let conversation = AgentConversation()
         conversations.insert(conversation, at: 0)
         activeConversationId = conversation.id
@@ -232,8 +238,9 @@ final class AgentService {
 
     func clearCurrentConversation() {
         if isBusy {
-            writeJSON(["type": "cancel"])
+            writeJSON(["type": "cancel", "sessionId": activeConversationId])
         }
+        cancelScheduledConversationSave()
         ensureActiveConversation()
         messages.removeAll()
         toolEvents.removeAll()
@@ -262,6 +269,7 @@ final class AgentService {
         }
         ensureActiveConversation()
         startRuntimeIfNeeded()
+        guard canWriteRuntimeInput else { return }
         syncRuntimeHistory()
         status = .running
         statusText = "正在压缩上下文"
@@ -278,7 +286,7 @@ final class AgentService {
             statusText = "生成中，先停止再切换"
             return
         }
-        saveActiveConversation()
+        flushScheduledConversationSave()
         activeConversationId = conversation.id
         loadActiveConversation()
         persistConversationStore()
@@ -292,6 +300,7 @@ final class AgentService {
             statusText = "生成中，先停止再删除"
             return
         }
+        cancelScheduledConversationSave()
         conversations.removeAll { $0.id == conversation.id }
         if conversations.isEmpty {
             conversations = [AgentConversation()]
@@ -320,6 +329,7 @@ final class AgentService {
             return
         }
         guard let index = conversations.firstIndex(where: { $0.id == conversation.id }) else { return }
+        cancelScheduledConversationSave()
         conversations[index].isArchived = true
         conversations[index].isPinned = false
         if activeConversationId == conversation.id {
@@ -350,6 +360,7 @@ final class AgentService {
         guard isConfigured else { return }
         let needsConfigure = process == nil
         startRuntimeIfNeeded()
+        guard canWriteRuntimeInput else { return }
         if needsConfigure {
             configureRuntime()
         }
@@ -471,6 +482,10 @@ final class AgentService {
         inputPipe.fileHandleForWriting.write(Data("\n".utf8))
     }
 
+    private var canWriteRuntimeInput: Bool {
+        process != nil && inputPipe != nil
+    }
+
     private func consumeOutput(_ text: String) {
         outputBuffer += text
         while let range = outputBuffer.range(of: "\n") {
@@ -488,6 +503,7 @@ final class AgentService {
         else {
             return
         }
+        let eventSessionId = runtimeEventSessionId(object)
 
         switch type {
         case "ready":
@@ -501,10 +517,23 @@ final class AgentService {
             }
             evolutionCandidateCount = object["evolutionCandidateCount"] as? Int ?? evolutionCandidateCount
         case "assistant_delta":
-            appendAssistantDelta(object["delta"] as? String ?? "")
+            appendAssistantDelta(
+                object["delta"] as? String ?? "",
+                messageId: object["messageId"] as? String,
+                sessionId: eventSessionId
+            )
+        case "assistant_segment_done":
+            finishAssistantSegment(
+                messageId: object["messageId"] as? String,
+                sessionId: eventSessionId
+            )
         case "assistant_done":
-            finishAssistantMessage()
+            finishAssistantMessage(
+                messageId: object["messageId"] as? String,
+                sessionId: eventSessionId
+            )
         case "context_usage":
+            guard eventSessionId == activeConversationId else { return }
             if let used = object["used"] as? Int,
                let limit = object["limit"] as? Int,
                let percent = object["percent"] as? Int
@@ -512,11 +541,13 @@ final class AgentService {
                 statusText = "上下文 \(percent)% · \(used) / \(limit)"
             }
         case "compact_started":
+            guard eventSessionId == activeConversationId else { return }
             status = .running
             statusText = "正在压缩上下文"
         case "history_compacted":
             applyCompactedHistory(object)
         case "compact_error":
+            guard eventSessionId == activeConversationId else { return }
             status = .error
             statusText = object["message"] as? String ?? "上下文压缩失败"
         case "conversation_title":
@@ -525,6 +556,7 @@ final class AgentService {
                 title: object["title"] as? String
             )
         case "tool_pending":
+            guard eventSessionId == activeConversationId else { return }
             upsertToolEvent(
                 id: object["id"] as? String ?? UUID().uuidString,
                 tool: object["tool"] as? String ?? "tool",
@@ -532,6 +564,7 @@ final class AgentService {
                 isPending: true
             )
         case "permission_auto_approved":
+            guard eventSessionId == activeConversationId else { return }
             upsertToolEvent(
                 id: UUID().uuidString,
                 tool: object["tool"] as? String ?? "tool",
@@ -541,6 +574,7 @@ final class AgentService {
                 approved: true
             )
         case "tool_result":
+            guard eventSessionId == activeConversationId else { return }
             finishToolEvent(
                 id: object["id"] as? String ?? UUID().uuidString,
                 tool: object["tool"] as? String ?? "tool",
@@ -548,6 +582,7 @@ final class AgentService {
                 content: object["content"] as? String ?? ""
             )
         case "permission_request":
+            guard eventSessionId == activeConversationId else { return }
             let preview = previewJSON(object["arguments"])
             let request = AgentPermissionRequest(
                 id: object["id"] as? String ?? UUID().uuidString,
@@ -589,30 +624,105 @@ final class AgentService {
         case "skills_updated":
             knownSkills = decodeRuntimeSkills(object["skills"])
         case "error":
+            guard eventSessionId == activeConversationId else {
+                finishAssistantMessage(
+                    messageId: object["messageId"] as? String,
+                    sessionId: eventSessionId
+                )
+                return
+            }
             status = .error
             statusText = object["message"] as? String ?? "悬屿错误"
-            finishAssistantMessage()
+            finishAssistantMessage(
+                messageId: object["messageId"] as? String,
+                sessionId: eventSessionId
+            )
         default:
             break
         }
     }
 
-    private func appendAssistantDelta(_ delta: String) {
-        guard !delta.isEmpty else { return }
-        status = .running
-        if let index = messages.lastIndex(where: { $0.role == .assistant && $0.isStreaming }) {
-            messages[index].text += delta
-        } else {
-            messages.append(AgentMessage(role: .assistant, text: delta, isStreaming: true))
-        }
-        saveActiveConversation()
+    func debugHandleRuntimeLine(_ line: String) {
+        handleRuntimeLine(line)
     }
 
-    private func finishAssistantMessage() {
-        let hadStreamingAnswer = messages.contains { $0.role == .assistant && $0.isStreaming && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        if let index = messages.lastIndex(where: { $0.role == .assistant && $0.isStreaming }) {
-            messages[index].isStreaming = false
+    private func appendAssistantDelta(_ delta: String, messageId: String?, sessionId: String? = nil) {
+        guard !delta.isEmpty else { return }
+        let targetSessionId = sessionId?.nilIfEmpty ?? activeConversationId
+        if targetSessionId != activeConversationId {
+            guard let conversationIndex = conversations.firstIndex(where: { $0.id == targetSessionId }) else { return }
+            appendAssistantDeltaMessage(
+                delta,
+                messageId: messageId,
+                messages: &conversations[conversationIndex].messages
+            )
+            conversations[conversationIndex].updatedAt = Date()
+            return
         }
+        status = .running
+        appendAssistantDeltaMessage(delta, messageId: messageId, messages: &messages)
+        scheduleActiveConversationSave()
+    }
+
+    private func appendAssistantDeltaMessage(_ delta: String, messageId: String?, messages targetMessages: inout [AgentMessage]) {
+        if let messageUUID = runtimeMessageUUID(messageId),
+           let index = targetMessages.firstIndex(where: { $0.id == messageUUID }) {
+            targetMessages[index].text += delta
+            targetMessages[index].isStreaming = true
+        } else if let index = targetMessages.lastIndex(where: { $0.role == .assistant && $0.isStreaming }) {
+            targetMessages[index].text += delta
+        } else {
+            targetMessages.append(AgentMessage(
+                id: runtimeMessageUUID(messageId) ?? UUID(),
+                role: .assistant,
+                text: delta,
+                isStreaming: true
+            ))
+        }
+    }
+
+    private func finishAssistantSegment(messageId: String?, sessionId: String? = nil) {
+        let targetSessionId = sessionId?.nilIfEmpty ?? activeConversationId
+        if targetSessionId != activeConversationId {
+            guard let conversationIndex = conversations.firstIndex(where: { $0.id == targetSessionId }) else { return }
+            finishAssistantSegmentMessage(
+                messageId: messageId,
+                messages: &conversations[conversationIndex].messages
+            )
+            conversations[conversationIndex].updatedAt = Date()
+            persistConversationStore()
+            return
+        }
+        finishAssistantSegmentMessage(messageId: messageId, messages: &messages)
+        flushScheduledConversationSave()
+    }
+
+    private func finishAssistantSegmentMessage(messageId: String?, messages targetMessages: inout [AgentMessage]) {
+        guard let messageUUID = runtimeMessageUUID(messageId),
+              let index = targetMessages.firstIndex(where: { $0.id == messageUUID })
+        else {
+            if let index = targetMessages.lastIndex(where: { $0.role == .assistant && $0.isStreaming }) {
+                targetMessages[index].isStreaming = false
+            }
+            return
+        }
+        targetMessages[index].isStreaming = false
+    }
+
+    private func finishAssistantMessage(messageId: String? = nil, sessionId: String? = nil) {
+        let targetSessionId = sessionId?.nilIfEmpty ?? activeConversationId
+        if targetSessionId != activeConversationId {
+            guard let conversationIndex = conversations.firstIndex(where: { $0.id == targetSessionId }) else { return }
+            finishAssistantMessages(
+                messageId: messageId,
+                messages: &conversations[conversationIndex].messages
+            )
+            conversations[conversationIndex].updatedAt = Date()
+            persistConversationStore()
+            return
+        }
+        let hadStreamingAnswer = messages.contains { $0.role == .assistant && $0.isStreaming && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        finishAssistantMessages(messageId: messageId, messages: &messages)
         if status != .error {
             status = .ready
             statusText = "就绪"
@@ -621,7 +731,18 @@ final class AgentService {
             toolEvents.removeAll()
             raiseAttention("悬屿已回答")
         }
-        saveActiveConversation()
+        flushScheduledConversationSave()
+    }
+
+    private func finishAssistantMessages(messageId: String?, messages targetMessages: inout [AgentMessage]) {
+        if let messageUUID = runtimeMessageUUID(messageId),
+           let index = targetMessages.firstIndex(where: { $0.id == messageUUID }) {
+            targetMessages[index].isStreaming = false
+        } else {
+            for index in targetMessages.indices where targetMessages[index].role == .assistant && targetMessages[index].isStreaming {
+                targetMessages[index].isStreaming = false
+            }
+        }
     }
 
     private func applyCompactedHistory(_ object: [String: Any]) {
@@ -851,6 +972,7 @@ final class AgentService {
     }
 
     private func loadActiveConversation() {
+        cancelScheduledConversationSave()
         ensureActiveConversation()
         guard let conversation = conversations.first(where: { $0.id == activeConversationId }) else { return }
         messages = conversation.messages.map { message in
@@ -892,6 +1014,35 @@ final class AgentService {
         persistConversationStore()
     }
 
+    private func scheduleActiveConversationSave() {
+        let conversationId = activeConversationId
+        pendingConversationSave?.cancel()
+        pendingConversationSaveId = conversationId
+        let workItem = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                guard let self, self.activeConversationId == conversationId else { return }
+                self.pendingConversationSave = nil
+                self.pendingConversationSaveId = ""
+                self.saveActiveConversation()
+            }
+        }
+        pendingConversationSave = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
+    }
+
+    private func flushScheduledConversationSave() {
+        pendingConversationSave?.cancel()
+        pendingConversationSave = nil
+        pendingConversationSaveId = ""
+        saveActiveConversation()
+    }
+
+    private func cancelScheduledConversationSave() {
+        pendingConversationSave?.cancel()
+        pendingConversationSave = nil
+        pendingConversationSaveId = ""
+    }
+
     private func persistConversationStore() {
         sortConversations()
         AgentConfigStore.saveConversationStore(
@@ -908,6 +1059,19 @@ final class AgentService {
             "contextSummary": contextSummary,
             "messages": messages.map(\.runtimeHistoryValue),
         ])
+    }
+
+    private func runtimeMessageUUID(_ messageId: String?) -> UUID? {
+        guard let cleaned = messageId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !cleaned.isEmpty
+        else { return nil }
+        return UUID(uuidString: cleaned)
+    }
+
+    private func runtimeEventSessionId(_ object: [String: Any]) -> String {
+        (object["sessionId"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty ?? activeConversationId
     }
 
     private func conversationTitle(messages: [AgentMessage], fallback: String) -> String {
@@ -963,21 +1127,62 @@ final class AgentService {
     }
 
     private func runtimeScriptURL() -> URL? {
-        let candidates = [
+        var candidates = [
             Bundle.main.resourceURL?.appendingPathComponent("AgentRuntime/runtime.mjs"),
             Bundle.module.resourceURL?.appendingPathComponent("AgentRuntime/runtime.mjs"),
             Bundle.module.resourceURL?.appendingPathComponent("Resources/AgentRuntime/runtime.mjs"),
-        ]
-        return candidates.compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0.path) }
+        ].compactMap { $0 }
+        candidates.append(contentsOf: developmentRootCandidates().flatMap { root in
+            [
+                root.appendingPathComponent("AgentRuntime/dist/runtime.mjs"),
+                root.appendingPathComponent("Sources/Xuanyu/Resources/AgentRuntime/runtime.mjs"),
+            ]
+        })
+        return firstExistingURL(candidates)
     }
 
     private func skillsRootURL() -> URL? {
-        let candidates = [
+        var candidates = [
             Bundle.main.resourceURL?.appendingPathComponent("AgentRuntime/skills"),
             Bundle.module.resourceURL?.appendingPathComponent("AgentRuntime/skills"),
             Bundle.module.resourceURL?.appendingPathComponent("Resources/AgentRuntime/skills"),
-        ]
-        return candidates.compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0.path) }
+        ].compactMap { $0 }
+        candidates.append(contentsOf: developmentRootCandidates().map {
+            $0.appendingPathComponent("Sources/Xuanyu/Resources/AgentRuntime/skills")
+        })
+        return firstExistingURL(candidates)
+    }
+
+    private func developmentRootCandidates() -> [URL] {
+        let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let sourceFile = URL(fileURLWithPath: #filePath)
+        let sourceRoot = sourceFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+
+        return deduplicatedURLs([
+            currentDirectory,
+            currentDirectory.appendingPathComponent("Xuanyu", isDirectory: true),
+            currentDirectory.deletingLastPathComponent(),
+            currentDirectory.deletingLastPathComponent().appendingPathComponent("Xuanyu", isDirectory: true),
+            sourceRoot,
+        ])
+    }
+
+    private func firstExistingURL(_ candidates: [URL]) -> URL? {
+        candidates.first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    private func deduplicatedURLs(_ urls: [URL]) -> [URL] {
+        var seen = Set<String>()
+        return urls.filter { url in
+            let path = url.standardizedFileURL.path
+            guard !seen.contains(path) else { return false }
+            seen.insert(path)
+            return true
+        }
     }
 
     private func nodeLaunch() -> (executable: URL, arguments: [String])? {
