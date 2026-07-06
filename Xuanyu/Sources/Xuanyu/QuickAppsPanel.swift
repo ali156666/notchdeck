@@ -17,17 +17,15 @@ struct QuickAppsPanel: View {
             }
 
             ScrollView(.horizontal, showsIndicators: true) {
-                GlassEffectContainer(spacing: 12) {
-                    LazyHStack(spacing: 10) {
-                        ForEach(service.apps) { app in
-                            QuickAppCard(app: app, service: service)
-                        }
-                        AddQuickAppCard {
-                            service.chooseApplications()
-                        }
+                LazyHStack(spacing: 10) {
+                    ForEach(service.apps) { app in
+                        QuickAppCard(app: app, service: service)
                     }
-                    .padding(.bottom, 4)
+                    AddQuickAppCard {
+                        service.chooseApplications()
+                    }
                 }
+                .padding(.bottom, 4)
             }
         }
         .padding(.horizontal, 18)
@@ -51,17 +49,23 @@ private struct QuickAppCard: View {
                         .resizable()
                         .scaledToFit()
                         .frame(width: 44, height: 44)
+                        .shadow(color: .black.opacity(0.20), radius: 1.5, y: 1)
 
                     Text(app.name)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.white.opacity(app.isInstalled ? 0.92 : 0.48))
                         .lineLimit(1)
+                        .shadow(color: .black.opacity(0.42), radius: 2, y: 1)
                 }
                 .padding(8)
                 .frame(width: 82, height: 82)
-                .glassCard(radius: XYGlass.cardM,
-                           tint: hovering ? Color.white.opacity(0.10) : nil,
-                           interactive: true)
+                .transparentGlassCard(
+                    radius: XYGlass.cardM,
+                    opacity: hovering ? 0.10 : 0.06,
+                    strokeOpacity: hovering ? 0.52 : 0.34,
+                    shadowOpacity: hovering ? 0.12 : 0.06,
+                    interactive: true
+                )
                 .scaleEffect(hovering ? 1.025 : 1)
             }
             .buttonStyle(.plain)
@@ -75,7 +79,7 @@ private struct QuickAppCard: View {
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white.opacity(0.70))
                         .frame(width: 18, height: 18)
-                        .background(.black.opacity(0.45), in: Circle())
+                        .background(.white.opacity(0.13), in: Circle())
                 }
                 .buttonStyle(.plain)
                 .padding(5)
@@ -105,7 +109,13 @@ private struct AddQuickAppCard: View {
             }
             .foregroundStyle(.white.opacity(hovering ? 0.88 : 0.68))
             .frame(width: 82, height: 82)
-            .innerSurface(radius: XYGlass.cardM, opacity: hovering ? 0.13 : 0.07)
+            .transparentGlassCard(
+                radius: XYGlass.cardM,
+                opacity: hovering ? 0.10 : 0.05,
+                strokeOpacity: hovering ? 0.48 : 0.28,
+                shadowOpacity: hovering ? 0.10 : 0.05,
+                interactive: true
+            )
             .overlay {
                 RoundedRectangle(cornerRadius: XYGlass.cardM, style: .continuous)
                     .stroke(.white.opacity(hovering ? 0.24 : 0.12), style: StrokeStyle(lineWidth: 1, dash: [6]))

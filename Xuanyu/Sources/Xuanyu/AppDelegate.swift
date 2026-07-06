@@ -3,7 +3,11 @@ import AVFoundation
 import SwiftUI
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+public final class AppDelegate: NSObject, NSApplicationDelegate {
+    public override init() {
+        super.init()
+    }
+
     private let state = IslandAppState()
     private var keepAliveWindow: NSWindow?
     private var panelController: PanelWindowController?
@@ -15,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var voiceStartTask: Task<Void, Never>?
     private var voiceMaximumDurationTask: Task<Void, Never>?
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    public func applicationDidFinishLaunching(_ notification: Notification) {
         terminateDuplicateInstances()
         ProcessInfo.processInfo.disableAutomaticTermination("悬屿需要持续显示播放状态")
         ProcessInfo.processInfo.disableSuddenTermination()
@@ -31,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestInitialVoicePermissions()
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
+    public func applicationWillTerminate(_ notification: Notification) {
         commandHoldMonitor?.stop()
         commandHoldMonitor = nil
         voiceStartTask?.cancel()
@@ -47,7 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keepAliveWindow = nil
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+    public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
 

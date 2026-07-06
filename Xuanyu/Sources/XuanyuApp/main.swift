@@ -1,4 +1,5 @@
 import SwiftUI
+import Xuanyu
 
 @main
 struct XuanyuApp: App {

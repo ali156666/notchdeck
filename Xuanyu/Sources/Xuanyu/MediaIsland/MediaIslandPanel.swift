@@ -55,22 +55,33 @@ struct MediaIslandPanel: View {
                     .resizable()
                     .scaledToFill()
             } else {
-                LinearGradient(
-                    colors: [.white.opacity(0.17), .white.opacity(0.04)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
+                Color.clear
+                    .transparentGlassCard(
+                        radius: XYGlass.media,
+                        opacity: 0.06,
+                        strokeOpacity: 0.34,
+                        shadowOpacity: 0.08,
+                        interactive: false
+                    )
                 Image(systemName: service.playback.hasPlayableTrack ? "music.note" : "play.rectangle")
                     .font(.system(size: 36, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.70))
             }
         }
         .frame(width: 128, height: 128)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: XYGlass.media, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(.white.opacity(0.10), lineWidth: 1)
+            RoundedRectangle(cornerRadius: XYGlass.media, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.34), .white.opacity(0.08), .clear],
+                        startPoint: .top,
+                        endPoint: .center
+                    ),
+                    lineWidth: 1
+                )
         }
+        .shadow(color: .black.opacity(0.08), radius: 10, y: 7)
     }
 
     private var titleBlock: some View {
@@ -188,7 +199,7 @@ struct BatteryPill: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
-        .background(.white.opacity(0.09), in: Capsule())
+        .transparentGlassCapsule(opacity: 0.04, strokeOpacity: 0.20, interactive: false)
     }
 }
 

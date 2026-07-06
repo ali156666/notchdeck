@@ -4,6 +4,9 @@ import PackageDescription
 let package = Package(
     name: "Xuanyu",
     platforms: [.macOS("26.0")],
+    products: [
+        .executable(name: "Xuanyu", targets: ["XuanyuApp"]),
+    ],
     dependencies: [],
     targets: [
         .binaryTarget(
@@ -14,7 +17,7 @@ let package = Package(
             name: "OnnxRuntime",
             path: "Vendor/onnxruntime.xcframework"
         ),
-        .executableTarget(
+        .target(
             name: "Xuanyu",
             dependencies: [
                 "SherpaOnnx",
@@ -24,14 +27,27 @@ let package = Package(
             resources: [
                 .copy("Resources")
             ],
+            swiftSettings: [
+                .unsafeFlags(["-enable-testing"], .when(configuration: .debug)),
+            ],
             linkerSettings: [
                 .linkedLibrary("c++"),
             ]
         ),
-        .testTarget(
-            name: "XuanyuTests",
+
+        .executableTarget(
+            name: "XuanyuApp",
             dependencies: ["Xuanyu"],
-            path: "Tests/XuanyuTests"
+            path: "Sources/XuanyuApp"
+        ),
+        .executableTarget(
+            name: "XuanyuRegressionTests",
+            dependencies: ["Xuanyu"],
+            path: "Tests/XuanyuRegressionTests"
+        ),
+        .testTarget(
+            name: "SwiftPMPlaceholderTests",
+            path: "Tests/SwiftPMPlaceholderTests"
         ),
     ]
 )
