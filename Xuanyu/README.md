@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/ali156666/notchdeck/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/ali156666/notchdeck?display_name=tag&sort=semver"></a>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green"></a>
-  <img alt="macOS" src="https://img.shields.io/badge/macOS-14%2B-black">
+  <img alt="macOS" src="https://img.shields.io/badge/macOS-26%2B-black">
   <img alt="Swift" src="https://img.shields.io/badge/Swift-5.9-orange">
   <img alt="Node" src="https://img.shields.io/badge/Node.js-18%2B-339933">
 </p>
@@ -28,7 +28,7 @@
   <img src="./docs/images/hero.png" alt="悬屿官网首屏截图" width="860">
 </p>
 
-悬屿是一个 macOS 顶栏悬浮面板应用。它贴着 MacBook 顶部运行，把音乐控制、AirPods 电量、剪贴板、快捷启动、系统看板、番茄钟、Command 语音输入和本地 Agent 收在一个干净入口里。
+悬屿是一个 macOS 顶栏悬浮面板应用。它贴着 MacBook 顶部运行，把音乐控制、AirPods 电量、剪贴板、快捷启动、系统看板、番茄钟、Command 语音输入和本地 Agent 收在一个干净入口里。当前版本面向 macOS 26+，界面采用 SwiftUI 原生 Liquid Glass：透明面板、玻璃卡片、柔和背景模糊和统一的语音输入 HUD。
 
 <p align="center">
   官网地址：<a href="https://notchdeck.xyz/">https://notchdeck.xyz/</a>
@@ -42,6 +42,8 @@
 
 - 贴合 MacBook 刘海区域的展开/收起面板
 - Dashboard、音乐、快捷应用、剪贴板、Agent 多模式切换
+- macOS 26 原生 Liquid Glass 透明玻璃底板，保留桌面背景透光与轻微模糊
+- 系统看板、剪贴板、快捷启动和媒体卡片使用统一玻璃卡片样式
 - 收起状态下保留轻量提醒，不打断当前窗口
 
 ### 媒体与设备
@@ -67,6 +69,7 @@
 - 工具调用确认、文件上传、桌面文件拖入识别和附件对话
 - 本地对话、记忆与会话管理
 - 长按左右 Command 0.5 秒开始语音输入，松开后进入审核，确认后发送给 Agent
+- 语音输入准备、录音、审核和发送状态使用与主面板一致的 Liquid Glass HUD
 - 支持 Apple 语音识别与按需下载的离线 SenseVoice 本地语音模型
 
 ### 语音输入
@@ -75,7 +78,7 @@
 - 按住 Command 说话，松开后进入识别与审核；用户点击“发送”后，文本才会交给当前 Agent 会话。
 - 默认使用 Apple 语音识别，适合中英混合输入，需要系统语音识别权限。
 - 可在 Agent 设置中下载本地 SenseVoice 模型离线识别；模型约 239.5 MB，只需要麦克风权限。
-- 录音时会显示红色麦克风、实时文字和屏幕边缘光圈；识别失败、空文本或权限拒绝不会发送空任务。
+- 录音、准备和审核状态都会显示 Liquid Glass 语音 HUD；识别失败、空文本或权限拒绝不会发送空任务。
 
 ## 截图
 
@@ -96,8 +99,8 @@
 
 ### 环境要求
 
-- macOS 14 或更新版本
-- Xcode Command Line Tools
+- macOS 26 或更新版本
+- Xcode 26 或匹配 macOS 26 SDK 的 Command Line Tools
 - Node.js 18 或更新版本
 
 ### 从源码运行
@@ -151,14 +154,16 @@ API key 由应用内 Agent 设置面板写入本机配置文件。这个文件�
 
 ```text
 Xuanyu/
-├── AgentRuntime/        # Node Agent runtime
-├── Sources/Xuanyu/      # macOS Swift 应用源码
-├── Tests/XuanyuTests/   # Swift 测试
-├── docs/                # 设计和实现文档
-├── scripts/             # 打包脚本
-├── Info.plist           # App bundle 配置
-├── Package.swift        # SwiftPM manifest
-└── build.sh             # 本地构建与运行脚本
+├── AgentRuntime/              # Node Agent runtime
+├── Sources/Xuanyu/            # macOS Swift 应用源码
+├── Sources/XuanyuApp/         # SwiftPM App 入口
+├── Tests/XuanyuRegressionTests/      # 不依赖 XCTest 的回归测试可执行目标
+├── Tests/SwiftPMPlaceholderTests/    # SwiftPM 占位测试目标
+├── docs/                      # 设计和实现文档
+├── scripts/                   # 打包脚本
+├── Info.plist                 # App bundle 配置
+├── Package.swift              # SwiftPM manifest
+└── build.sh                   # 本地构建与运行脚本
 ```
 
 ## 开发
@@ -167,6 +172,7 @@ Xuanyu/
 
 ```bash
 swift build
+swift build -c release
 ```
 
 ### Agent runtime
@@ -179,10 +185,10 @@ npm test
 ### 测试
 
 ```bash
-swift test
+swift run XuanyuRegressionTests
 ```
 
-如果 `swift test` 报 `no such module 'XCTest'`，请确认当前 `xcode-select` 指向完整 Xcode 或包含 XCTest 的 Command Line Tools。
+当前仓库保留了 `SwiftPMPlaceholderTests` 作为 SwiftPM 测试占位；真实断言集中在 `XuanyuRegressionTests` 可执行目标里，避免本地 Command Line Tools 缺少 XCTest 时出现 `no such module 'XCTest'`。
 
 ## 常见问题
 
@@ -217,6 +223,8 @@ npm test
 
 ```bash
 swift build
+swift build -c release
+swift run XuanyuRegressionTests
 (cd AgentRuntime && npm test)
 ```
 

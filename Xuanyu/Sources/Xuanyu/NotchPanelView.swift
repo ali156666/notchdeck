@@ -59,9 +59,9 @@ struct NotchPanelView: View {
     private var presentedHeight: CGFloat? {
         if state.voiceInput.prefersLargeHUD {
             if state.voiceInput.state == .reviewing {
-                return notchHeight + 188
+                return notchHeight + 164
             }
-            return notchHeight + 108
+            return notchHeight + 96
         }
         return state.isExpanded ? nil : collapsedHeight
     }
@@ -105,31 +105,36 @@ struct NotchPanelView: View {
     }
 
     private var islandShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            bottomLeadingRadius: state.isExpanded || state.voiceInput.prefersLargeHUD ? XYGlass.panelRadius : XYGlass.collapsedRadius,
-            bottomTrailingRadius: state.isExpanded || state.voiceInput.prefersLargeHUD ? XYGlass.panelRadius : XYGlass.collapsedRadius
+        let expanded = state.isExpanded || state.voiceInput.prefersLargeHUD
+        return UnevenRoundedRectangle(
+            topLeadingRadius: expanded ? 24 : 0,
+            bottomLeadingRadius: expanded ? XYGlass.panelRadius : XYGlass.collapsedRadius,
+            bottomTrailingRadius: expanded ? XYGlass.panelRadius : XYGlass.collapsedRadius,
+            topTrailingRadius: expanded ? 24 : 0,
+            style: .continuous
         )
     }
 
     private var island: some View {
-        VStack(spacing: 0) {
-            if state.voiceInput.prefersLargeHUD {
-                voiceInputHUD
-                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
-            } else if state.isExpanded {
-                expandedPanel
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            } else {
-                collapsedBar
-                    .transition(.opacity)
+        ZStack(alignment: .top) {
+            islandBackground
+
+            VStack(spacing: 0) {
+                if state.voiceInput.prefersLargeHUD {
+                    voiceInputHUD
+                        .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+                } else if state.isExpanded {
+                    expandedPanel
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                } else {
+                    collapsedBar
+                        .transition(.opacity)
+                }
             }
         }
         .frame(width: presentedWidth)
         .frame(height: presentedHeight)
         .frame(minHeight: notchHeight)
-        .background {
-            islandShape.fill(.black)
-        }
         .clipShape(islandShape)
         .shadow(color: .black.opacity(state.isExpanded || state.voiceInput.prefersLargeHUD ? 0.30 : 0), radius: 18, y: 6)
         .contentShape(Rectangle())
@@ -143,6 +148,21 @@ struct NotchPanelView: View {
                 state.pomodoroCollapsedReminder = nil
             }
         }
+    }
+
+    @ViewBuilder
+    private var islandBackground: some View {
+        if state.voiceInput.prefersLargeHUD {
+            VoiceIslandGlassBackground(shape: islandShape, accent: voiceInputColor)
+        } else if usesTransparentPanelGlass {
+            TransparentIslandGlassBackground(shape: islandShape)
+        } else {
+            islandShape.fill(.black)
+        }
+    }
+
+    private var usesTransparentPanelGlass: Bool {
+        state.isExpanded && state.mode != .agent
     }
 
     private var islandDropOverlay: some View {
@@ -193,7 +213,7 @@ struct NotchPanelView: View {
                     .frame(height: 132)
             case .clipboard:
                 ClipboardPanel(service: state.clipboard)
-                    .frame(height: 224)
+                    .frame(height: 186)
             case .agent:
                 AgentIslandPanel(
                     service: state.agent,
@@ -207,26 +227,29 @@ struct NotchPanelView: View {
     }
 
     private var expandedHeader: some View {
-        GlassEffectContainer(spacing: 12) {
-            HStack(spacing: 10) {
-            LingdongHomeButton(selected: state.mode == .dashboard) {
-                withAnimation(.snappy(duration: 0.22)) {
-                    state.mode = .dashboard
-                    state.agentShowsSettings = false
-                }
-            }
+        HStack(spacing: 10) {
+            GlassEffectContainer(spacing: 10) {
+                HStack(spacing: 10) {
+                    LingdongHomeButton(selected: state.mode == .dashboard) {
+                        withAnimation(.snappy(duration: 0.22)) {
+                            state.mode = .dashboard
+                            state.agentShowsSettings = false
+                        }
+                    }
 
-            HeaderPageButton(title: "快捷", icon: "square.grid.2x2", selected: state.mode == .quickApps) {
-                withAnimation(.snappy(duration: 0.22)) {
-                    state.mode = state.mode == .quickApps ? .music : .quickApps
-                    state.agentShowsSettings = false
-                }
-            }
+                    HeaderPageButton(title: "快捷", icon: "square.grid.2x2", selected: state.mode == .quickApps) {
+                        withAnimation(.snappy(duration: 0.22)) {
+                            state.mode = state.mode == .quickApps ? .music : .quickApps
+                            state.agentShowsSettings = false
+                        }
+                    }
 
-            HeaderPageButton(title: "剪贴板", icon: "doc.on.clipboard", selected: state.mode == .clipboard) {
-                withAnimation(.snappy(duration: 0.22)) {
-                    state.mode = .clipboard
-                    state.agentShowsSettings = false
+                    HeaderPageButton(title: "剪贴板", icon: "doc.on.clipboard", selected: state.mode == .clipboard) {
+                        withAnimation(.snappy(duration: 0.22)) {
+                            state.mode = .clipboard
+                            state.agentShowsSettings = false
+                        }
+                    }
                 }
             }
 
@@ -238,24 +261,27 @@ struct NotchPanelView: View {
 
             PomodoroInlineView(service: state.pomodoro)
 
-            HStack(spacing: 4) {
-                ModeSegmentButton(title: "Music", icon: "music.note", selected: state.mode == .music) {
-                    withAnimation(.snappy(duration: 0.22)) {
-                        state.mode = .music
-                        state.agentShowsSettings = false
-                        state.agentSettingsTab = .model
+            GlassEffectContainer(spacing: 6) {
+                HStack(spacing: 6) {
+                    HStack(spacing: 4) {
+                        ModeSegmentButton(title: "Music", icon: "music.note", selected: state.mode == .music) {
+                            withAnimation(.snappy(duration: 0.22)) {
+                                state.mode = .music
+                                state.agentShowsSettings = false
+                                state.agentSettingsTab = .model
+                            }
+                        }
+                        ModeSegmentButton(title: "悬屿", icon: "sparkles", selected: state.mode == .agent) {
+                            withAnimation(.snappy(duration: 0.22)) { state.mode = .agent }
+                        }
+                    }
+                    .padding(3)
+                    .glassCapsule(interactive: false)
+
+                    HeaderIconButton(icon: "power", help: "退出悬屿") {
+                        showsQuitConfirmation = true
                     }
                 }
-                ModeSegmentButton(title: "悬屿", icon: "sparkles", selected: state.mode == .agent) {
-                    withAnimation(.snappy(duration: 0.22)) { state.mode = .agent }
-                }
-            }
-            .padding(3)
-            .glassCapsule(interactive: false)
-
-            HeaderIconButton(icon: "power", help: "退出悬屿") {
-                showsQuitConfirmation = true
-            }
             }
         }
         .padding(.horizontal, 18)
@@ -325,6 +351,48 @@ struct NotchPanelView: View {
                     .allowsHitTesting(false)
             }
 
+            voiceHUDCard
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var voiceHUDCard: some View {
+        let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
+
+        return ZStack {
+            shape
+                .fill(.clear)
+                .glassEffect(.regular.interactive(), in: shape)
+                .opacity(0.14)
+                .allowsHitTesting(false)
+
+            shape
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            voiceInputColor.opacity(0.14),
+                            .white.opacity(0.045),
+                            .clear,
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .blendMode(.screen)
+                .allowsHitTesting(false)
+
+            shape
+                .fill(
+                    LinearGradient(
+                        colors: [.white.opacity(0.030), .clear, .black.opacity(0.018)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .allowsHitTesting(false)
+
             HStack(spacing: 16) {
                 voiceHUDLeadingIcon
 
@@ -332,6 +400,7 @@ struct NotchPanelView: View {
                     Text(voiceHUDTitle)
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.26), radius: 3, y: 1)
 
                     if state.voiceInput.state == .recording {
                         voiceWaveform
@@ -340,46 +409,70 @@ struct NotchPanelView: View {
                     } else {
                         Text(state.voiceInput.displayText)
                             .font(.system(size: 12.5, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.68))
+                            .foregroundStyle(.white.opacity(0.78))
                             .lineLimit(2)
+                            .shadow(color: .black.opacity(0.22), radius: 2, y: 1)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 if state.voiceInput.state == .permission {
-                    Button {
-                        openRelevantVoicePermission()
-                    } label: {
-                        Label("打开设置", systemImage: "gear")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    voicePermissionButton
                 } else if state.voiceInput.state == .reviewing {
                     voiceReviewActions
                 }
             }
-            .padding(.horizontal, 20)
-            .frame(height: state.voiceInput.state == .reviewing ? 188 : 108)
+            .padding(.horizontal, 18)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background {
-            LinearGradient(
-                colors: [
-                    voiceInputColor.opacity(0.18),
-                    Color.black.opacity(0.04),
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
+        .frame(height: state.voiceInput.state == .reviewing ? 132 : 72)
+        .clipShape(shape)
+        .overlay {
+            shape
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.46), .white.opacity(0.14), .clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+                .allowsHitTesting(false)
         }
+        .shadow(color: .black.opacity(0.16), radius: 10, y: 7)
     }
 
     @ViewBuilder
     private var voiceHUDLeadingIcon: some View {
         ZStack {
             Circle()
-                .fill(voiceInputColor.opacity(0.18))
-                .frame(width: 54, height: 54)
+                .fill(.clear)
+                .glassEffect(.regular.interactive(), in: .circle)
+                .opacity(0.12)
+
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            voiceInputColor.opacity(0.26),
+                            .white.opacity(0.08),
+                            .clear,
+                        ],
+                        center: .topLeading,
+                        startRadius: 0,
+                        endRadius: 58
+                    )
+                )
+                .blendMode(.screen)
+
+            Circle()
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.42), .white.opacity(0.12), .clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
 
             switch state.voiceInput.state {
             case .preparing, .transcribing:
@@ -413,6 +506,8 @@ struct NotchPanelView: View {
                     .foregroundStyle(voiceInputColor)
             }
         }
+        .frame(width: 54, height: 54)
+        .shadow(color: voiceInputColor.opacity(0.20), radius: 10, y: 3)
     }
 
     private var voiceHUDTitle: String {
@@ -460,39 +555,85 @@ struct NotchPanelView: View {
             set: { state.voiceInput.transcript = $0 }
         ))
         .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(.white.opacity(0.92))
+        .foregroundStyle(.white.opacity(0.94))
         .scrollContentBackground(.hidden)
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .frame(height: 72)
-        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(.white.opacity(0.10), lineWidth: 1)
+        .transparentGlassCard(
+            radius: 12,
+            opacity: 0.08,
+            strokeOpacity: 0.28,
+            shadowOpacity: 0.04,
+            interactive: true
+        )
+    }
+
+    private var voicePermissionButton: some View {
+        Button {
+            openRelevantVoicePermission()
+        } label: {
+            Label("打开设置", systemImage: "gear")
+                .font(.system(size: 12, weight: .bold))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .transparentGlassCapsule(opacity: 0.09, strokeOpacity: 0.34, interactive: true)
         }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white.opacity(0.88))
     }
 
     private var voiceReviewActions: some View {
         VStack(spacing: 8) {
-            Button {
+            voiceReviewActionButton(
+                title: "发送",
+                systemImage: "paperplane.fill",
+                isPrimary: true,
+                isDisabled: state.voiceInput.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ) {
                 submitReviewedVoiceInput()
-            } label: {
-                Label("发送", systemImage: "paperplane.fill")
-                    .frame(width: 78)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .disabled(state.voiceInput.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-            Button {
+            voiceReviewActionButton(
+                title: "取消",
+                systemImage: "xmark",
+                isPrimary: false,
+                isDisabled: false
+            ) {
                 state.voiceInput.cancelReview()
-            } label: {
-                Label("取消", systemImage: "xmark")
-                    .frame(width: 78)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
         }
+    }
+
+    private func voiceReviewActionButton(
+        title: String,
+        systemImage: String,
+        isPrimary: Bool,
+        isDisabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 12, weight: .bold))
+                .frame(width: 78)
+                .padding(.vertical, 7)
+                .transparentGlassCapsule(
+                    opacity: isPrimary ? 0.12 : 0.08,
+                    strokeOpacity: isPrimary ? 0.44 : 0.30,
+                    interactive: true
+                )
+                .overlay {
+                    if isPrimary {
+                        Capsule()
+                            .fill(voiceInputColor.opacity(0.12))
+                            .blendMode(.screen)
+                            .allowsHitTesting(false)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isDisabled ? .white.opacity(0.36) : .white.opacity(isPrimary ? 0.96 : 0.78))
+        .disabled(isDisabled)
     }
 
     private func submitReviewedVoiceInput() {
@@ -756,13 +897,13 @@ private struct LingdongHomeButton: View {
                     .font(.system(size: 12, weight: .bold))
                     .lineLimit(1)
             }
-            .foregroundStyle(selected ? .black : .white.opacity(0.78))
+            .foregroundStyle(selected ? .white : .white.opacity(0.78))
             .padding(.horizontal, 11)
             .padding(.vertical, 7)
             .frame(width: 104)
 
             if selected {
-                label.background(.white, in: Capsule())
+                label.glassCapsule(tint: .white.opacity(0.18), interactive: false)
             } else {
                 label.glassCapsule()
             }
@@ -795,7 +936,7 @@ private struct HeaderPageButton: View {
             if selected {
                 label.glassCapsule(tint: .white.opacity(0.12), interactive: false)
             } else {
-                label
+                label.glassCapsule(interactive: false)
             }
         }
         .buttonStyle(.plain)
@@ -875,10 +1016,10 @@ private struct ModeSegmentButton: View {
         Button(action: action) {
             Label(title, systemImage: icon)
                 .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(selected ? .black : .white.opacity(0.64))
+                .foregroundStyle(selected ? .white : .white.opacity(0.64))
                 .padding(.horizontal, 11)
                 .padding(.vertical, 6)
-                .background(selected ? .white : .clear, in: Capsule())
+                .glassCapsule(tint: selected ? .white.opacity(0.12) : nil, interactive: false)
         }
         .buttonStyle(.plain)
     }

@@ -5,6 +5,22 @@ private final class IslandPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
+private final class TransparentPanelHostingView<Content: View>: NSHostingView<Content> {
+    override var isOpaque: Bool { false }
+
+    required init(rootView: Content) {
+        super.init(rootView: rootView)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.isOpaque = false
+    }
+
+    @available(*, unavailable)
+    @MainActor required dynamic init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
 @MainActor
 final class PanelWindowController: NSObject {
     private let state: IslandAppState
@@ -114,7 +130,11 @@ final class PanelWindowController: NSObject {
 
     private func makeContentView(for screen: NSScreen, size: NSSize) -> NSView {
         let container = NSView(frame: NSRect(origin: .zero, size: size))
-        let hostingView = NSHostingView(rootView: NotchPanelView(state: state, screen: screen))
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.clear.cgColor
+        container.layer?.isOpaque = false
+
+        let hostingView = TransparentPanelHostingView(rootView: NotchPanelView(state: state, screen: screen))
         hostingView.sizingOptions = []
         hostingView.frame = container.bounds
         hostingView.autoresizingMask = [.width, .height]
@@ -124,9 +144,10 @@ final class PanelWindowController: NSObject {
 
     private func panelSize(for screen: NSScreen) -> NSSize {
         if state.voiceInput.prefersLargeHUD {
+            let isReviewing = state.voiceInput.state == .reviewing
             return NSSize(
-                width: min(520, screen.frame.width - 40),
-                height: ScreenDetector.topBarHeight(for: screen) + 132
+                width: isReviewing ? min(620, screen.frame.width - 40) : min(480, screen.frame.width - 40),
+                height: ScreenDetector.topBarHeight(for: screen) + (isReviewing ? 164 : 96)
             )
         }
 

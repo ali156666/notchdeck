@@ -14,11 +14,12 @@
   <img src="./Xuanyu/docs/images/hero.png" alt="悬屿官网首屏截图" width="860">
 </p>
 
-悬屿是一个 macOS 顶栏悬浮面板应用。它贴着 MacBook 顶部运行，把音乐控制、AirPods 电量、剪贴板、快捷启动、系统看板、番茄钟、Command 语音输入和本地 Agent 收在一个干净入口里。
+悬屿是一个 macOS 顶栏悬浮面板应用。它贴着 MacBook 顶部运行，把音乐控制、AirPods 电量、剪贴板、快捷启动、系统看板、番茄钟、Command 语音输入和本地 Agent 收在一个干净入口里。新版界面已适配 macOS 26 Liquid Glass，展开面板、卡片、快捷入口、剪贴板和语音输入 HUD 都使用透明玻璃质感。
 
 ## 功能
 
 - 贴合 MacBook 刘海区域的展开/收起面板
+- macOS 26 原生 Liquid Glass 透明玻璃界面，保留桌面背景透光与柔和模糊
 - Apple Music 与 Spotify 播放控制、歌词展示和 AirPods 电量读取
 - 收起状态歌词悬浮展示
 - 快捷应用启动、剪贴板历史、系统看板、天气、日历与番茄钟
@@ -28,6 +29,7 @@
 - 工具调用确认、文件上传、桌面文件拖入识别和附件对话
 - 长按左右 Command 0.5 秒语音输入，支持 Apple 语音识别与离线 SenseVoice 本地模型
 - 松开 Command 后先审核识别文本，确认后再发送给 Agent 执行
+- 语音输入识别、审核和发送 HUD 已统一为液态玻璃样式
 
 ## 截图
 
@@ -43,8 +45,8 @@
 
 ### 环境要求
 
-- macOS 14 或更新版本
-- Xcode Command Line Tools
+- macOS 26 或更新版本
+- Xcode 26 或匹配 macOS 26 SDK 的 Command Line Tools
 - Node.js 18 或更新版本
 
 ### 从源码运行

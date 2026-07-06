@@ -665,15 +665,23 @@ final class AgentService {
     }
 
     private func appendAssistantDeltaMessage(_ delta: String, messageId: String?, messages targetMessages: inout [AgentMessage]) {
-        if let messageUUID = runtimeMessageUUID(messageId),
-           let index = targetMessages.firstIndex(where: { $0.id == messageUUID }) {
-            targetMessages[index].text += delta
-            targetMessages[index].isStreaming = true
+        if let messageUUID = runtimeMessageUUID(messageId) {
+            if let index = targetMessages.firstIndex(where: { $0.id == messageUUID }) {
+                targetMessages[index].text += delta
+                targetMessages[index].isStreaming = true
+            } else {
+                targetMessages.append(AgentMessage(
+                    id: messageUUID,
+                    role: .assistant,
+                    text: delta,
+                    isStreaming: true
+                ))
+            }
         } else if let index = targetMessages.lastIndex(where: { $0.role == .assistant && $0.isStreaming }) {
             targetMessages[index].text += delta
         } else {
             targetMessages.append(AgentMessage(
-                id: runtimeMessageUUID(messageId) ?? UUID(),
+                id: UUID(),
                 role: .assistant,
                 text: delta,
                 isStreaming: true

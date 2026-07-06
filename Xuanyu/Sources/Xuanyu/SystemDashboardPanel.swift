@@ -162,18 +162,38 @@ private struct DashboardCard<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Label(title, systemImage: icon)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(.white.opacity(0.74))
-                .lineLimit(1)
-            content
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+
+        ZStack(alignment: .topLeading) {
+            shape
+                .fill(.clear)
+                .glassEffect(.regular, in: shape)
+                .opacity(0.06)
+
+            VStack(alignment: .leading, spacing: 9) {
+                Label(title, systemImage: icon)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.74))
+                    .lineLimit(1)
+                content
+            }
+            .padding(12)
         }
-        .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .glassCard(radius: XYGlass.cardL)
+        .overlay {
+            shape.strokeBorder(
+                LinearGradient(
+                    colors: [.white.opacity(0.42), .clear],
+                    startPoint: .top,
+                    endPoint: .center
+                ),
+                lineWidth: 1
+            )
+        }
+        .shadow(color: .black.opacity(0.10), radius: 10, y: 7)
     }
 }
+
 
 private struct DashboardKV: View {
     let key: String
