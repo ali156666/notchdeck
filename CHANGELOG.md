@@ -9,6 +9,7 @@
 - 支持从 `~/.codex/pets` 选择自己的 Codex Pet，兼容 8×9 v1 与 8×11 v2 spritesheet，并持久保存选择。
 - 增加 Clawd / Dex 来源吉祥物、8-bit 状态音效、Claude hooks 安装与零配置 transcript 尾随。
 - 通知权限被系统关闭时，编码页会显示橙色铃铛并跳转到 macOS 通知设置。
+- 修复 760pt 窗口下顶部导航标题被压成省略号，以及空状态说明文字被裁切的问题。
 
 ### Agent
 

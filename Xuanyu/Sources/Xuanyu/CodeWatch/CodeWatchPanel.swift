@@ -169,10 +169,16 @@ struct CodeWatchPanel: View {
             Text("当前没有运行中的 Claude Code / ChatGPT / Codex 会话")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.white.opacity(0.5))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             Text("在 ChatGPT.app 开始任务，或在终端启动 claude / codex")
                 .font(.system(size: 11, weight: .regular))
                 .foregroundStyle(.white.opacity(0.35))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
