@@ -241,9 +241,9 @@ struct NotchPanelView: View {
     }
 
     private var expandedHeader: some View {
-        HStack(spacing: 10) {
-            GlassEffectContainer(spacing: 10) {
-                HStack(spacing: 10) {
+        HStack(spacing: 8) {
+            GlassEffectContainer(spacing: 6) {
+                HStack(spacing: 6) {
                     LingdongHomeButton(selected: state.mode == .dashboard) {
                         withAnimation(.snappy(duration: 0.22)) {
                             state.mode = .dashboard
@@ -273,8 +273,10 @@ struct NotchPanelView: View {
                     }
                 }
             }
+            .fixedSize(horizontal: true, vertical: false)
+            .layoutPriority(2)
 
-            Spacer(minLength: 10)
+            Spacer(minLength: 6)
 
             if state.voiceInput.shouldDisplay {
                 voiceInputChip
@@ -304,8 +306,9 @@ struct NotchPanelView: View {
                     }
                 }
             }
+            .fixedSize(horizontal: true, vertical: false)
         }
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 14)
         .frame(height: 48)
     }
 
@@ -965,9 +968,9 @@ private struct LingdongHomeButton: View {
                     .lineLimit(1)
             }
             .foregroundStyle(selected ? .white : .white.opacity(0.78))
-            .padding(.horizontal, 11)
+            .padding(.horizontal, 9)
             .padding(.vertical, 7)
-            .frame(width: 104)
+            .frame(width: 88)
 
             if selected {
                 label.glassCapsule(tint: .white.opacity(0.18), interactive: false)
@@ -976,7 +979,7 @@ private struct LingdongHomeButton: View {
             }
         }
         .buttonStyle(.plain)
-        .frame(width: 104)
+        .frame(width: 88)
         .help("悬屿看板")
     }
 }
@@ -993,11 +996,12 @@ private struct HeaderPageButton: View {
                 Image(systemName: icon)
                     .font(.system(size: 12, weight: .bold))
                 Text(title)
-                    .font(.system(size: 17, weight: .bold))
+                    .font(.system(size: 12, weight: .bold))
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .foregroundStyle(selected ? .white : .white.opacity(0.68))
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 9)
             .frame(height: 34)
 
             if selected {
@@ -1007,6 +1011,7 @@ private struct HeaderPageButton: View {
             }
         }
         .buttonStyle(.plain)
+        .fixedSize(horizontal: true, vertical: false)
         .help(title)
     }
 }
@@ -1056,7 +1061,7 @@ private struct PomodoroInlineView: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 6)
         .glassCapsule(interactive: false)
-        .frame(width: 150)
+        .frame(width: 130)
     }
 
     private var color: Color {
@@ -1084,7 +1089,7 @@ private struct ModeSegmentButton: View {
             Label(title, systemImage: icon)
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(selected ? .white : .white.opacity(0.64))
-                .padding(.horizontal, 11)
+                .padding(.horizontal, 8)
                 .padding(.vertical, 6)
                 .glassCapsule(tint: selected ? .white.opacity(0.12) : nil, interactive: false)
         }
