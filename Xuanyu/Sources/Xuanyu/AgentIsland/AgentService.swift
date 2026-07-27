@@ -319,6 +319,7 @@ final class AgentService {
             return
         }
         cancelScheduledConversationSave()
+        AgentConfigStore.markConversationDeleted(conversation.id)
         conversations.removeAll { $0.id == conversation.id }
         if conversations.isEmpty {
             conversations = [AgentConversation()]

@@ -102,6 +102,8 @@ struct XuanyuRegressionTestRunner {
             ("Regression tests use an isolated app support directory", testRegressionAppSupportIsIsolated),
             ("Agent store removes leaked regression fixtures", testAgentStoreRemovesLeakedRegressionFixtures),
             ("Agent store preserves meaningful leaked-session content", testAgentStorePreservesMeaningfulLeakedSessionContent),
+            ("Agent store recovers missing conversations from the session archive", testAgentStoreRecoversMissingArchivedConversations),
+            ("Agent store does not recover explicitly deleted conversations", testAgentStoreDoesNotRecoverDeletedConversations),
             ("AgentService routes streaming deltas by runtime message id", testRuntimeMessageIdsRouteDeltasAndFinishSegments),
             ("AgentService keeps old-session runtime events out of active conversation", testRuntimeEventsWithOldSessionIdDoNotAppendToActiveConversation),
             ("Command hold short press never triggers hold", testShortCommandPressNeverTriggersHold),
@@ -206,6 +208,65 @@ struct XuanyuRegressionTestRunner {
         try expectFalse(repaired.conversations[0].id == leakedActiveConversation.id)
         try expectEqual(repaired.conversations[0].messages, [meaningfulMessage])
         try expectEqual(repaired.activeConversationId, repaired.conversations[0].id)
+    }
+
+    private static func testAgentStoreRecoversMissingArchivedConversations() throws {
+        let current = AgentConversation(id: "current", title: "当前对话")
+        let store = AgentConversationStore(activeConversationId: current.id, conversations: [current])
+        let records = [
+            AgentConfigStore.ArchivedSessionRecord(
+                id: "AD4032B4-D9F2-4DBE-80D9-D9A992738DA8",
+                sessionId: "archived-session",
+                createdAt: "2026-07-01T08:00:00.000Z",
+                role: "user",
+                content: "恢复这个会话"
+            ),
+            AgentConfigStore.ArchivedSessionRecord(
+                id: "EE514E1D-EB9E-4A19-8FF8-1A9309F8EAC4",
+                sessionId: "archived-session",
+                createdAt: "2026-07-01T08:00:01.000Z",
+                role: "assistant",
+                content: ""
+            ),
+            AgentConfigStore.ArchivedSessionRecord(
+                id: "2242FA01-7D0F-401D-8A3E-0F5A3ED7AA98",
+                sessionId: "archived-session",
+                createdAt: "2026-07-01T08:00:02.000Z",
+                role: "assistant",
+                content: "历史回答"
+            ),
+        ]
+
+        let recovered = AgentConfigStore.recoveringArchivedConversations(
+            in: store,
+            records: records,
+            deletedIds: []
+        )
+        let archivedConversation = try unwrap(recovered.conversations.first { $0.id == "archived-session" })
+        try expectEqual(recovered.activeConversationId, current.id)
+        try expectEqual(archivedConversation.title, "恢复这个会话")
+        try expectEqual(archivedConversation.messages.map(\.text), ["恢复这个会话", "历史回答"])
+    }
+
+    private static func testAgentStoreDoesNotRecoverDeletedConversations() throws {
+        let current = AgentConversation(id: "current", title: "当前对话")
+        let store = AgentConversationStore(activeConversationId: current.id, conversations: [current])
+        let records = [
+            AgentConfigStore.ArchivedSessionRecord(
+                id: "19D33237-A795-45A2-90F0-415B36C51DAF",
+                sessionId: "deleted-session",
+                createdAt: "2026-07-01T08:00:00.000Z",
+                role: "user",
+                content: "已经删除"
+            ),
+        ]
+
+        let recovered = AgentConfigStore.recoveringArchivedConversations(
+            in: store,
+            records: records,
+            deletedIds: ["deleted-session"]
+        )
+        try expectEqual(recovered, store)
     }
 
     private static func testRuntimeMessageIdsRouteDeltasAndFinishSegments() throws {

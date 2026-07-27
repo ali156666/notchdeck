@@ -1,6 +1,14 @@
 import Foundation
 
 enum AgentConfigStore {
+    struct ArchivedSessionRecord: Decodable, Equatable {
+        var id: String
+        var sessionId: String
+        var createdAt: String
+        var role: String
+        var content: String
+    }
+
     static var configDirectory: URL {
         AppSupportDirectory.agent
     }
@@ -19,6 +27,18 @@ enum AgentConfigStore {
 
     static var leakedRegressionBackupURL: URL {
         configDirectory.appendingPathComponent("ui-conversations.pre-regression-fix.json")
+    }
+
+    static var archiveRecoveryBackupURL: URL {
+        configDirectory.appendingPathComponent("ui-conversations.pre-archive-recovery.json")
+    }
+
+    static var deletedConversationIdsURL: URL {
+        configDirectory.appendingPathComponent("deleted-conversation-ids.json")
+    }
+
+    static var sessionsArchiveURL: URL {
+        configDirectory.appendingPathComponent("sessions.jsonl")
     }
 
     static func loadConfig() -> AgentConfig {
@@ -67,13 +87,21 @@ enum AgentConfigStore {
            let store = try? JSONDecoder().decode(AgentConversationStore.self, from: data),
            !store.conversations.isEmpty
         {
-            let cleanStore = sanitized(store)
+            var cleanStore = sanitized(store)
             if let repairedStore = repairingLeakedRegressionFixtures(in: cleanStore) {
                 backupLeakedRegressionStore(data)
-                saveConversationStore(repairedStore)
-                return repairedStore
+                cleanStore = repairedStore
             }
-            return cleanStore
+            let recoveredStore = recoveringArchivedConversations(
+                in: cleanStore,
+                records: loadArchivedSessionRecords(),
+                deletedIds: loadDeletedConversationIds()
+            )
+            if recoveredStore != sanitized(store) {
+                backupArchiveRecoveryStore(data)
+                saveConversationStore(recoveredStore)
+            }
+            return recoveredStore
         }
 
         let migratedMessages = loadMessages()
@@ -83,7 +111,16 @@ enum AgentConfigStore {
             updatedAt: migratedMessages.last?.createdAt ?? Date(),
             messages: migratedMessages
         )
-        return AgentConversationStore(activeConversationId: conversation.id, conversations: [conversation])
+        let migratedStore = AgentConversationStore(activeConversationId: conversation.id, conversations: [conversation])
+        let recoveredStore = recoveringArchivedConversations(
+            in: migratedStore,
+            records: loadArchivedSessionRecords(),
+            deletedIds: loadDeletedConversationIds()
+        )
+        if recoveredStore != migratedStore {
+            saveConversationStore(recoveredStore)
+        }
+        return recoveredStore
     }
 
     static func saveConversationStore(_ store: AgentConversationStore) {
@@ -141,6 +178,83 @@ enum AgentConfigStore {
         return sanitized(AgentConversationStore(activeConversationId: repairedActiveId, conversations: conversations))
     }
 
+    static func recoveringArchivedConversations(
+        in store: AgentConversationStore,
+        records: [ArchivedSessionRecord],
+        deletedIds: Set<String>
+    ) -> AgentConversationStore {
+        let existingIds = Set(store.conversations.map(\.id))
+        let groupedRecords = Dictionary(grouping: records) { $0.sessionId }
+        var recoveredConversations: [AgentConversation] = []
+
+        for (sessionId, sessionRecords) in groupedRecords {
+            guard !sessionId.isEmpty,
+                  !existingIds.contains(sessionId),
+                  !deletedIds.contains(sessionId)
+            else {
+                continue
+            }
+
+            let sortedRecords = sessionRecords.sorted { left, right in
+                if left.createdAt == right.createdAt {
+                    return left.id < right.id
+                }
+                return left.createdAt < right.createdAt
+            }
+            var seenRecordIds: Set<String> = []
+            let messages = sortedRecords.compactMap { record -> AgentMessage? in
+                guard seenRecordIds.insert(record.id).inserted,
+                      let role = AgentMessageRole(rawValue: record.role)
+                else {
+                    return nil
+                }
+                let text = record.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return nil }
+                return AgentMessage(
+                    id: UUID(uuidString: record.id) ?? UUID(),
+                    role: role,
+                    text: text,
+                    createdAt: archiveDate(record.createdAt) ?? Date(),
+                    isStreaming: false
+                )
+            }
+            guard !messages.isEmpty else { continue }
+            recoveredConversations.append(
+                AgentConversation(
+                    id: sessionId,
+                    title: title(for: messages),
+                    createdAt: messages.first?.createdAt ?? Date(),
+                    updatedAt: messages.last?.createdAt ?? Date(),
+                    messages: messages
+                )
+            )
+        }
+
+        guard !recoveredConversations.isEmpty else {
+            return sanitized(store)
+        }
+        return sanitized(
+            AgentConversationStore(
+                activeConversationId: store.activeConversationId,
+                conversations: store.conversations + recoveredConversations
+            )
+        )
+    }
+
+    static func markConversationDeleted(_ conversationId: String) {
+        let trimmedId = conversationId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedId.isEmpty else { return }
+        var ids = loadDeletedConversationIds()
+        guard ids.insert(trimmedId).inserted else { return }
+        do {
+            try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(ids.sorted())
+            try data.write(to: deletedConversationIdsURL, options: .atomic)
+        } catch {
+            NSLog("悬屿 deleted conversation marker save failed: \(error)")
+        }
+    }
+
     private static func isLeakedOldSessionFixture(_ conversation: AgentConversation) -> Bool {
         guard conversation.id == "conversation-a",
               conversation.title == "A",
@@ -186,6 +300,46 @@ enum AgentConfigStore {
         } catch {
             NSLog("悬屿 leaked regression conversation backup failed: \(error)")
         }
+    }
+
+    private static func backupArchiveRecoveryStore(_ data: Data) {
+        guard !FileManager.default.fileExists(atPath: archiveRecoveryBackupURL.path) else {
+            return
+        }
+        do {
+            try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+            try data.write(to: archiveRecoveryBackupURL, options: .atomic)
+        } catch {
+            NSLog("悬屿 archive recovery conversation backup failed: \(error)")
+        }
+    }
+
+    private static func loadArchivedSessionRecords() -> [ArchivedSessionRecord] {
+        guard let text = try? String(contentsOf: sessionsArchiveURL, encoding: .utf8) else {
+            return []
+        }
+        let decoder = JSONDecoder()
+        return text.split(whereSeparator: \.isNewline).compactMap { line in
+            try? decoder.decode(ArchivedSessionRecord.self, from: Data(line.utf8))
+        }
+    }
+
+    private static func loadDeletedConversationIds() -> Set<String> {
+        guard let data = try? Data(contentsOf: deletedConversationIdsURL),
+              let ids = try? JSONDecoder().decode([String].self, from: data)
+        else {
+            return []
+        }
+        return Set(ids)
+    }
+
+    private static func archiveDate(_ value: String) -> Date? {
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractionalFormatter.date(from: value) {
+            return date
+        }
+        return ISO8601DateFormatter().date(from: value)
     }
 
     private static func sanitized(_ store: AgentConversationStore) -> AgentConversationStore {
