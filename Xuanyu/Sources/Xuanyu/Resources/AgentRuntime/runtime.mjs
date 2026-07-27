@@ -6,6 +6,45 @@ import { appendFile, mkdir, readFile, readdir, stat, unlink, writeFile } from "n
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import {
+  HARNESS_DEFAULTS,
+  applyPlanUpdate,
+  budgetNotice,
+  createLoopGuardState,
+  createRunTelemetry,
+  harnessStatus,
+  loopGuardNotice,
+  recordMutation,
+  recordToolSignature,
+  renderPlanBlock,
+  toolCallSignature,
+  verificationNotice,
+} from "./harness.mjs";
+import {
+  NOTE_LIMITS,
+  NOTE_TYPES,
+  extractLinks,
+  noteAuditEntries,
+  noteFromFlatEntry,
+  noteQualityHint,
+  noteTokens,
+  normalizeNoteName,
+  normalizeNoteType,
+  parseNote,
+  renderNoteIndex,
+  renderRecalledNotes,
+  selectRecallNotes,
+  serializeNote,
+  upsertNote,
+  validateNote,
+} from "./memory.mjs";
+import {
+  dispatchAgents,
+  listAgentRoles,
+  normalizeDispatchTasks,
+  renderReports,
+  runEngineerLoop,
+} from "./subagents.mjs";
 
 const DEFAULT_CONFIG = {
   providerId: "default",
@@ -19,6 +58,8 @@ const DEFAULT_CONFIG = {
   contextLimit: 128_000,
   historyLimit: 40,
   memoryEnabled: true,
+  memoryNotesEnabled: true,
+  memoryAutoRecallLimit: 3,
   userProfileEnabled: true,
   memoryCharLimit: 2200,
   userCharLimit: 1375,
@@ -32,6 +73,13 @@ const DEFAULT_CONFIG = {
   evolutionEnabled: true,
   lazyModeEnabled: false,
   approvalPolicy: "on-request",
+  harnessEnabled: true,
+  planningEnabled: true,
+  verifyGateEnabled: true,
+  multiAgentEnabled: true,
+  maxToolTurns: HARNESS_DEFAULTS.maxToolTurns,
+  subAgentConcurrency: 3,
+  subAgentMaxTurns: 0,
   mcpServers: [],
   customSkills: [],
 };
@@ -59,12 +107,20 @@ const runtime = {
   activeProcesses: new Set(),
   cancelledSessions: new Set(),
   abortController: null,
+  abortControllers: new Set(),
   fileSearchCache: new Map(),
   backgroundTasks: new Set(),
+  notesRoot: "",
+  notes: [],
+  recalledNotes: [],
+  noteVectorCache: new Map(),
+  plan: [],
+  telemetry: null,
+  loopGuard: createLoopGuardState(),
+  activeSubAgents: new Map(),
 };
 
 const MAX_ATTACHMENT_TEXT_BYTES = 180_000;
-const MAX_TOOL_TURNS = 20;
 const DEFAULT_LOCAL_PROCESS_TIMEOUT_MS = 30_000;
 const MAX_LOCAL_PROCESS_TIMEOUT_MS = 120_000;
 const AUTO_COMPACT_RATIO = 0.8;
@@ -85,6 +141,7 @@ function send(event) {
 function createAssistantDeltaEmitter(options = {}) {
   const messageId = options.messageId || "assistant-current";
   const sessionId = options.sessionId || runtime.sessionId;
+  const agent = options.agentContext || null;
   const emitDelta = options.emitDelta !== false;
   let pending = "";
   let timer = null;
@@ -95,7 +152,12 @@ function createAssistantDeltaEmitter(options = {}) {
       timer = null;
     }
     if (!emitDelta || !pending) return;
-    send({ type: "assistant_delta", sessionId, messageId, delta: pending });
+    // 子 agent 的输出走独立事件，避免混进主对话的助手气泡。
+    if (agent) {
+      send({ type: "subagent_delta", sessionId, agentId: agent.agentId, role: agent.role, label: agent.label, delta: pending });
+    } else {
+      send({ type: "assistant_delta", sessionId, messageId, delta: pending });
+    }
     pending = "";
   };
 
@@ -544,9 +606,15 @@ export function classifyToolRisk(tool, args = {}, policyOverride) {
     tool.kind === "list_skills" ||
     tool.kind === "file_search" ||
     tool.kind === "memory_manage" ||
+    tool.kind === "memory_note_write" ||
+    tool.kind === "memory_recall" ||
     tool.kind === "session_search" ||
     tool.kind === "propose_skill_evolution" ||
-    tool.kind === "list_evolution_candidates"
+    tool.kind === "list_evolution_candidates" ||
+    tool.kind === "update_plan" ||
+    // 派发本身不做任何事；子 agent 调用的每个危险工具仍会各自弹权限确认。
+    tool.kind === "dispatch_agents" ||
+    tool.kind === "engineer_loop"
   ) return "auto";
   if (tool.kind === "apply_skill_evolution") return "confirm";
   if (tool.kind === "shell" || tool.kind === "skill_script") {
@@ -849,6 +917,7 @@ async function sendMemoryAudit() {
     type: "memory_audit",
     memory: memoryEntryObjects("memory", memory),
     user: memoryEntryObjects("user", user),
+    notes: notesEnabled() ? noteAuditEntries(runtime.notes) : [],
     memoryUsage: {
       memory: memoryUsage(memory, memoryLimitFor("memory")),
       user: memoryUsage(user, memoryLimitFor("user")),
@@ -882,6 +951,158 @@ async function mutateMemoryEntryByIndex(args, action) {
   await loadMemorySnapshot();
   send({ type: "memory_updated", target, usage: result.usage });
   await sendMemoryAudit();
+}
+
+function todayStamp() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function noteFilePath(name) {
+  return join(runtime.notesRoot, `${name}.md`);
+}
+
+async function loadNotes() {
+  runtime.notes = [];
+  if (!runtime.notesRoot || !existsSync(runtime.notesRoot)) return;
+  const entries = await readdir(runtime.notesRoot, { withFileTypes: true });
+  const notes = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+    try {
+      const note = parseNote(
+        await readFile(join(runtime.notesRoot, entry.name), "utf8"),
+        entry.name.replace(/\.md$/, ""),
+      );
+      if (note) notes.push(note);
+    } catch {
+      // 单个笔记读坏不该拖垮整个记忆层。
+    }
+  }
+  runtime.notes = notes.sort((left, right) =>
+    String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
+}
+
+function notesEnabled() {
+  return runtime.config.memoryEnabled !== false && runtime.config.memoryNotesEnabled !== false;
+}
+
+/** 自动召回只用词面匹配：确定、够快，且不需要在建提示时等网络。 */
+function recallNotesForText(text, limit) {
+  if (!notesEnabled()) return [];
+  return selectRecallNotes(runtime.notes, text, { limit });
+}
+
+async function noteSemanticScores(query) {
+  if (runtime.config.semanticSearchEnabled === false || !runtime.notes.length) return null;
+  const queryVector = await textEmbedding(query);
+  if (!queryVector?.length) return null;
+  const scores = new Map();
+  for (const note of runtime.notes) {
+    const key = `${note.name}:${note.updatedAt}`;
+    let vector = runtime.noteVectorCache.get(key);
+    if (!vector) {
+      vector = await textEmbedding(`${note.name}\n${note.description}\n${note.body.slice(0, 4000)}`);
+      if (vector?.length) runtime.noteVectorCache.set(key, vector);
+    }
+    if (vector?.length) scores.set(note.name, cosineSimilarity(vector, queryVector));
+  }
+  return scores;
+}
+
+async function recallMemoryNotes(args) {
+  if (!notesEnabled()) return { ok: false, content: "记忆笔记已关闭。" };
+  const query = String(args?.query || "").trim();
+  if (!query) return { ok: false, content: "memory_recall 需要一个非空 query。" };
+  const limit = boundedNumber(args?.limit, NOTE_LIMITS.recallNotes, 1, 12);
+  const semanticScores = await noteSemanticScores(query);
+  const matches = selectRecallNotes(runtime.notes, query, { limit, semanticScores });
+  if (!matches.length) {
+    return { ok: true, content: JSON.stringify({ query, count: 0, notes: [], hint: "没有匹配的记忆笔记。" }) };
+  }
+  return {
+    ok: true,
+    content: JSON.stringify({
+      query,
+      count: matches.length,
+      notes: matches.map((note) => ({
+        name: note.name,
+        type: note.type,
+        description: note.description,
+        updatedAt: note.updatedAt,
+        links: note.links,
+        content: note.body,
+      })),
+    }),
+  };
+}
+
+async function writeMemoryNote(args) {
+  if (!notesEnabled()) return { ok: false, content: "记忆笔记已关闭。" };
+  const name = normalizeNoteName(args?.name);
+  if (!name) return { ok: false, content: "name 需要是可作文件名的短标识（会被规范成 kebab-case）。" };
+  const existing = runtime.notes.find((note) => note.name === name);
+  const now = todayStamp();
+  const body = String(args?.content || "").trim();
+  const note = {
+    name,
+    description: String(args?.description || "").replace(/\s+/g, " ").trim().slice(0, NOTE_LIMITS.description),
+    type: normalizeNoteType(args?.type),
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+    body,
+    links: extractLinks(body),
+  };
+
+  const error = validateNote(note, { scanContent: validateMemoryContent });
+  if (error) return { ok: false, content: JSON.stringify({ error }) };
+
+  const result = upsertNote(runtime.notes, note);
+  if (result.error) return { ok: false, content: JSON.stringify({ error: result.error }) };
+
+  await mkdir(runtime.notesRoot, { recursive: true });
+  await writeFile(noteFilePath(name), serializeNote(note));
+  runtime.notes = result.notes;
+
+  // 热记忆写满时，可以顺手把一条旧的 MEMORY.md 条目搬进笔记腾位置。
+  let promoted = "";
+  const promoteFrom = String(args?.promote_from_memory || args?.promoteFromMemory || "").trim();
+  if (promoteFrom && runtime.config.memoryEnabled !== false) {
+    const entries = await readEntries(runtime.memoryPath);
+    const removal = mutateMemoryEntries(entries, { action: "remove", old_text: promoteFrom }, memoryLimitFor("memory"));
+    if (removal.ok) {
+      await writeEntries(runtime.memoryPath, removal.entries);
+      await loadMemorySnapshot();
+      send({ type: "memory_updated", target: "memory", usage: removal.usage });
+      promoted = promoteFrom;
+    }
+  }
+
+  send({ type: "memory_notes_updated", count: runtime.notes.length, name });
+  await sendMemoryAudit();
+  return {
+    ok: true,
+    content: JSON.stringify({
+      name,
+      type: note.type,
+      created: result.created,
+      total: runtime.notes.length,
+      promotedFromMemory: promoted,
+      hint: noteQualityHint(note),
+    }),
+  };
+}
+
+async function forgetMemoryNote(args) {
+  if (!notesEnabled()) return { ok: false, content: "记忆笔记已关闭。" };
+  const name = normalizeNoteName(args?.name);
+  const note = runtime.notes.find((item) => item.name === name);
+  if (!note) return { ok: false, content: `没有名为 ${name || args?.name} 的记忆笔记。` };
+  const path = noteFilePath(name);
+  if (existsSync(path)) await unlink(path);
+  runtime.notes = runtime.notes.filter((item) => item.name !== name);
+  send({ type: "memory_notes_updated", count: runtime.notes.length, name, removed: true });
+  await sendMemoryAudit();
+  return { ok: true, content: JSON.stringify({ name, removed: true, total: runtime.notes.length }) };
 }
 
 function renderMemoryBlock(target, entries) {
@@ -1349,6 +1570,40 @@ function selectSkillsForMessage(text, skills) {
   });
 }
 
+function memoryNotesInstruction() {
+  if (!notesEnabled()) return "";
+  return [
+    "长期记忆分两层，别混用：",
+    "- MEMORY.md / USER.md 是有界的热记忆，只放每轮都需要的短事实，用 memory_manage 维护。写满时不要急着删——用 memory_write 的 promote_from_memory 把旧条目搬进笔记。",
+    "- 记忆笔记是不限量的冷存档，用 memory_write，一条事实一个笔记。纠正、项目约束、决定及其理由、外部资源指针都归这里。",
+    "你的上下文里始终有笔记索引，但那只有名字和描述。要用某条笔记的细节前，先 memory_recall 取正文，不要照着描述猜。",
+    "写笔记时：描述要写成事实本身而不是标题（『番茄钟默认 45 分钟』而不是『番茄钟设置』）；feedback 和 project 类型补上 **Why:** 和 **How to apply:**；日期写绝对日期；相关笔记之间用 [[名字]] 互链。",
+    "已经能从代码、git 记录或 skills 里读到的东西不要存成记忆。发现某条笔记过时了就用 memory_write 更新它，确认错了就 memory_forget。",
+  ].join("\n");
+}
+
+function planningInstruction() {
+  if (runtime.config.harnessEnabled === false || runtime.config.planningEnabled === false) return "";
+  return [
+    "多步任务先用 update_plan 立一个 3-7 步的计划，然后每完成一步立刻更新状态；同一时刻只能有一个步骤是 in_progress。",
+    "单步就能答完的问题不要立计划——那只是噪音。",
+    runtime.config.verifyGateEnabled === false
+      ? ""
+      : "改过文件或执行过写操作后，在给最终答复前必须自检一次，并如实说明验证过什么、没验证什么。",
+  ].filter(Boolean).join("\n");
+}
+
+function multiAgentInstruction() {
+  if (runtime.config.multiAgentEnabled === false) return "";
+  return [
+    "你可以带一支子 agent 编队：",
+    "- dispatch_agents：把彼此独立的子任务并行分给 explorer/implementer/reviewer/tester，或用 sequential 让后一个接着前一个的结论往下做。适合『同时摸清好几个模块』这类扇出工作。",
+    "- engineer_loop：实现→对抗性评审→带着评审意见重做，直到评审通过。适合正确性比速度更重要的改动。",
+    "子 agent 看不到当前对话，它们需要的背景必须全部写进 goal / context / shared_context。",
+    "简单任务自己动手就行，别为一次查找开编队——派发有真实的时间和 token 成本。",
+  ].join("\n");
+}
+
 function systemPromptFor(userText = "") {
   const skills = runtime.skills;
   const selectedSkills = selectSkillsForMessage(userText, skills);
@@ -1371,8 +1626,14 @@ function systemPromptFor(userText = "") {
     runtime.config.lazyModeEnabled
       ? "Treat skills as procedural memory. When a repeatable workflow or correction deserves a reusable skill, call propose_skill_evolution with evidence. Never overwrite a skill directly. Only call apply_skill_evolution after the user explicitly asks to promote a reviewed candidate; lazy mode will auto-approve the runtime permission gate."
       : "Treat skills as procedural memory. When a repeatable workflow or correction deserves a reusable skill, call propose_skill_evolution with evidence. Never overwrite a skill directly. Only call apply_skill_evolution after the user explicitly asks to promote a reviewed candidate; runtime permission confirmation is still required.",
+    memoryNotesInstruction(),
+    planningInstruction(),
+    multiAgentInstruction(),
     runtime.config.memoryEnabled === false ? "" : renderMemoryBlock("memory", runtime.memorySnapshot.memory),
     runtime.config.userProfileEnabled === false ? "" : renderMemoryBlock("user", runtime.memorySnapshot.user),
+    notesEnabled() ? renderNoteIndex(runtime.notes) : "",
+    notesEnabled() ? renderRecalledNotes(runtime.recalledNotes) : "",
+    renderPlanBlock(runtime.plan),
     "Available built-in skills:\n" + (skillList || "- none"),
     selected ? "Selected skill instructions:\n" + selected : "",
   ].filter(Boolean).join("\n\n");
@@ -1550,6 +1811,141 @@ function openAITools() {
     },
   ];
 
+  if (runtime.config.memoryEnabled !== false && runtime.config.memoryNotesEnabled !== false) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "memory_write",
+        description: `Save one durable fact as its own memory note. Use this instead of memory_manage for anything with substance: a correction worth keeping, a project constraint, a decision and its reason, a pointer to an external resource. One fact per note — split compound knowledge into several. Writing an existing name updates that note in place. Types: ${NOTE_TYPES.join(" | ")}. Only the description is always visible to you later, so make it a precise retrieval hook, not a teaser. Link related notes by writing [[other-note-name]] in the content.`,
+        parameters: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "Short kebab-case identifier, unique per fact." },
+            description: { type: "string", description: "One line stating the fact itself — this is the only thing you see when deciding whether to recall it." },
+            type: { type: "string", enum: NOTE_TYPES },
+            content: { type: "string", description: "The fact. For feedback and project notes, follow it with **Why:** and **How to apply:** lines. Use absolute dates, never 'yesterday' or 'last week'." },
+            promote_from_memory: { type: "string", description: "Optional unique substring of a MEMORY.md entry to remove after this note is written; use it to move a fact out of the bounded hot memory." },
+          },
+          required: ["name", "description", "type", "content"],
+          additionalProperties: false,
+        },
+      },
+    });
+    tools.push({
+      type: "function",
+      function: {
+        name: "memory_recall",
+        description: "Read the full content of memory notes matching a query. The memory index in your context shows only names and descriptions — call this before relying on any note's details, and whenever the index hints that something relevant exists.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            limit: { type: "integer", minimum: 1, maximum: 12 },
+          },
+          required: ["query"],
+          additionalProperties: false,
+        },
+      },
+    });
+    tools.push({
+      type: "function",
+      function: {
+        name: "memory_forget",
+        description: "Delete a memory note that turned out to be wrong or obsolete. Prefer updating via memory_write when the fact merely changed.",
+        parameters: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            reason: { type: "string" },
+          },
+          required: ["name"],
+          additionalProperties: false,
+        },
+      },
+    });
+  }
+
+  if (runtime.config.planningEnabled !== false && runtime.config.harnessEnabled !== false) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "update_plan",
+        description: "Maintain the visible task plan for a multi-step job. Call it once early with the full step list, then again after each step to flip its status. Exactly one step may be in_progress. Skip it for single-step questions.",
+        parameters: {
+          type: "object",
+          properties: {
+            plan: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  step: { type: "string" },
+                  status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+                },
+                required: ["step", "status"],
+                additionalProperties: false,
+              },
+            },
+            explanation: { type: "string", description: "Optional one-line note about why the plan changed." },
+          },
+          required: ["plan"],
+          additionalProperties: false,
+        },
+      },
+    });
+  }
+
+  if (runtime.config.multiAgentEnabled !== false) {
+    const roleList = listAgentRoles().map((role) => `${role.id}（${role.title}${role.readOnly ? "，只读" : ""}）`).join("、");
+    tools.push({
+      type: "function",
+      function: {
+        name: "dispatch_agents",
+        description: `Delegate independent sub-tasks to role-scoped sub-agents that each run their own tool loop and report back. Available roles: ${roleList}. Use parallel mode for independent work (e.g. searching several subsystems at once) and sequential mode when a later task needs earlier findings. Sub-agents cannot see this conversation, so put everything they need in goal and context. Do not use it for a single trivial lookup you can do yourself.`,
+        parameters: {
+          type: "object",
+          properties: {
+            mode: { type: "string", enum: ["parallel", "sequential"] },
+            shared_context: { type: "string", description: "Background every sub-agent should receive." },
+            tasks: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  role: { type: "string", enum: listAgentRoles().map((role) => role.id) },
+                  goal: { type: "string" },
+                  label: { type: "string", description: "Short display name, e.g. 音乐模块." },
+                  context: { type: "string" },
+                },
+                required: ["role", "goal"],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ["tasks"],
+          additionalProperties: false,
+        },
+      },
+    });
+    tools.push({
+      type: "function",
+      function: {
+        name: "engineer_loop",
+        description: "Run an implement-then-review loop: an implementer sub-agent makes the change, a reviewer sub-agent adversarially verifies it against the real files, and the loop repeats with the review feedback until the reviewer approves or rounds run out. Use for changes where correctness matters more than speed.",
+        parameters: {
+          type: "object",
+          properties: {
+            goal: { type: "string", description: "The change to make, stated precisely enough to implement and to verify." },
+            context: { type: "string" },
+            rounds: { type: "integer", minimum: 1, maximum: 4 },
+          },
+          required: ["goal"],
+          additionalProperties: false,
+        },
+      },
+    });
+  }
+
   for (const client of runtime.mcpClients.values()) {
     for (const tool of client.tools) {
       tools.push({
@@ -1569,7 +1965,11 @@ function parseToolArgs(text) {
   return parseJSON(text || "{}", {});
 }
 
-async function askPermission(tool, args, summary, sessionId = runtime.sessionId) {
+// 界面同一时刻只能展示一个确认框，而并行子 agent 可能同时请求权限，
+// 所以把提示排成一条队列：前一个有结果之前不发下一个。
+let permissionQueue = Promise.resolve();
+
+function promptPermission(tool, args, summary, sessionId) {
   const id = randomUUID();
   send({
     type: "permission_request",
@@ -1583,6 +1983,15 @@ async function askPermission(tool, args, summary, sessionId = runtime.sessionId)
   return new Promise((resolvePermission) => {
     runtime.pendingPermissions.set(id, resolvePermission);
   });
+}
+
+async function askPermission(tool, args, summary, sessionId = runtime.sessionId) {
+  const run = () => (isCancelledSession(sessionId)
+    ? Promise.resolve(false)
+    : promptPermission(tool, args, summary, sessionId));
+  const next = permissionQueue.then(run, run);
+  permissionQueue = next.then(() => {}, () => {});
+  return next;
 }
 
 async function runWithPermission(tool, args, summary, action, sessionId = runtime.sessionId) {
@@ -1891,7 +2300,120 @@ async function runApplyPatch(args, sessionId = runtime.sessionId) {
   );
 }
 
+function emitHarnessStatus(sessionId = runtime.sessionId) {
+  if (!runtime.telemetry || runtime.config.harnessEnabled === false) return;
+  send({ type: "harness_status", sessionId, ...harnessStatus(runtime.telemetry, runtime.plan) });
+}
+
+async function updatePlan(args, sessionId = runtime.sessionId) {
+  const result = applyPlanUpdate(runtime.plan, args);
+  if (!result.ok) return { ok: false, content: JSON.stringify({ error: result.error }) };
+  runtime.plan = result.plan;
+  send({
+    type: "plan_updated",
+    sessionId,
+    plan: runtime.plan,
+    explanation: String(args?.explanation || "").slice(0, 300),
+  });
+  emitHarnessStatus(sessionId);
+  return { ok: true, content: JSON.stringify({ plan: runtime.plan, note: result.note || "" }) };
+}
+
+function isReadOnlyMCPName(name) {
+  for (const client of runtime.mcpClients.values()) {
+    const tool = client.tools.find((item) => item.openAIName === name);
+    if (tool) return isReadOnlyTool(tool);
+  }
+  return false;
+}
+
+function subAgentDeps(sessionId) {
+  const runId = randomUUID().slice(0, 8);
+  return {
+    streamChat,
+    executeToolCalls,
+    tools: openAITools(),
+    send,
+    sessionId,
+    isCancelled: () => isCancelledSession(sessionId),
+    isReadOnlyMCPName,
+    maxTurnsOverride: boundedNumber(runtime.config.subAgentMaxTurns, 0, 0, 40),
+    makeAgentId: (suffix) => `${runId}-${suffix}`,
+  };
+}
+
+async function runDispatchAgents(args, sessionId = runtime.sessionId) {
+  if (runtime.config.multiAgentEnabled === false) {
+    return { ok: false, content: "多智能体协同已在设置中关闭。" };
+  }
+  const tasks = normalizeDispatchTasks(args?.tasks, { maxTasks: 6 });
+  if (!tasks.length) {
+    return { ok: false, content: "dispatch_agents 需要至少一个同时带合法 role 和非空 goal 的任务。" };
+  }
+  const mode = args?.mode === "sequential" ? "sequential" : "parallel";
+  const concurrency = boundedNumber(runtime.config.subAgentConcurrency, 3, 1, 6);
+  send({
+    type: "dispatch_started",
+    sessionId,
+    mode,
+    count: tasks.length,
+    tasks: tasks.map((task) => ({ role: task.role, label: task.label })),
+  });
+  const reports = await dispatchAgents(tasks, {
+    ...subAgentDeps(sessionId),
+    mode,
+    concurrency,
+    sharedContext: String(args?.shared_context || args?.sharedContext || "").slice(0, 8000),
+  });
+  const failed = reports.filter((report) => !report.ok).length;
+  send({ type: "dispatch_done", sessionId, mode, count: reports.length, failed });
+  return {
+    ok: failed < reports.length,
+    content: renderReports(reports) || "所有子 agent 都没有产出报告。",
+  };
+}
+
+async function runEngineerLoopTool(args, sessionId = runtime.sessionId) {
+  if (runtime.config.multiAgentEnabled === false) {
+    return { ok: false, content: "多智能体协同已在设置中关闭。" };
+  }
+  const goal = String(args?.goal || "").trim();
+  if (!goal) return { ok: false, content: "engineer_loop 需要一个非空的 goal。" };
+  send({ type: "engineer_loop_started", sessionId, goal: goal.slice(0, 200) });
+  const result = await runEngineerLoop(
+    { goal, context: String(args?.context || "").slice(0, 8000), rounds: args?.rounds },
+    subAgentDeps(sessionId),
+  );
+  send({ type: "engineer_loop_done", sessionId, verdict: result.verdict, rounds: result.rounds });
+  const header = result.verdict === "approved"
+    ? `工程师循环在第 ${result.rounds} 轮通过评审。`
+    : `工程师循环跑满 ${result.rounds} 轮仍未通过评审，下面是最后一轮的问题清单，需要你决定怎么处理。`;
+  return {
+    ok: result.verdict === "approved",
+    content: [header, renderReports(result.history)].filter(Boolean).join("\n\n"),
+  };
+}
+
+// 记录本轮真实发生的写操作，供收尾自检闸门使用。
+function trackMutation(name, args, result) {
+  if (!runtime.telemetry || !result?.ok) return;
+  if (name === "apply_patch") {
+    const files = parseJSON(result.content, {})?.files || [];
+    const detail = files.map((file) => `${file.action} ${file.path}`).join(", ") || "patch applied";
+    recordMutation(runtime.telemetry, { tool: "apply_patch", detail });
+    return;
+  }
+  if (name === "shell" || name === "run_skill_script") {
+    const command = String(args?.command ?? args?.script ?? "");
+    if (name === "shell" && !analyzeCommand(command).writes) return;
+    recordMutation(runtime.telemetry, { tool: name, detail: command });
+  }
+}
+
 async function runBuiltInTool(name, args, sessionId = runtime.sessionId) {
+  if (name === "update_plan") return updatePlan(args, sessionId);
+  if (name === "dispatch_agents") return runDispatchAgents(args, sessionId);
+  if (name === "engineer_loop") return runEngineerLoopTool(args, sessionId);
   if (name === "list_skills") {
     return { ok: true, content: JSON.stringify(runtime.skills.map(({ name: skillName, title, summary, path }) => ({ name: skillName, title, summary, path }))) };
   }
@@ -1904,6 +2426,9 @@ async function runBuiltInTool(name, args, sessionId = runtime.sessionId) {
   if (name === "apply_patch") return runApplyPatch(args, sessionId);
   if (name === "file_search") return runFileSearch(args);
   if (name === "memory_manage") return manageMemory(args);
+  if (name === "memory_write") return writeMemoryNote(args);
+  if (name === "memory_recall") return recallMemoryNotes(args);
+  if (name === "memory_forget") return forgetMemoryNote(args);
   if (name === "session_search") return searchSessions(args);
   if (name === "propose_skill_evolution") return proposeSkillEvolution(args);
   if (name === "list_evolution_candidates") return listEvolutionCandidates(args);
@@ -2261,8 +2786,39 @@ function accumulateAnthropicEvent(event, blocks, toolCalls) {
   return "";
 }
 
+// 并行子 agent 会同时打开多个模型请求，取消时必须能一次性中止全部。
+function createRequestAbort() {
+  const controller = new AbortController();
+  runtime.abortControllers.add(controller);
+  runtime.abortController = controller;
+  return controller;
+}
+
+function releaseRequestAbort(controller) {
+  runtime.abortControllers.delete(controller);
+  if (runtime.abortController === controller) {
+    runtime.abortController = [...runtime.abortControllers].at(-1) || null;
+  }
+}
+
+function abortAllRequests() {
+  for (const controller of [...runtime.abortControllers]) {
+    try { controller.abort(); } catch { /* ignore */ }
+  }
+  runtime.abortControllers.clear();
+  runtime.abortController = null;
+}
+
 async function streamAnthropicMessages(messages, tools, options = {}) {
-  runtime.abortController = new AbortController();
+  const abort = createRequestAbort();
+  try {
+    return await streamAnthropicMessagesInner(messages, tools, options, abort);
+  } finally {
+    releaseRequestAbort(abort);
+  }
+}
+
+async function streamAnthropicMessagesInner(messages, tools, options, abort) {
   const sessionId = options.sessionId || runtime.sessionId;
   const deltaEmitter = createAssistantDeltaEmitter(options);
   const activeTools = options.allowTools === false ? [] : anthropicToolsFromOpenAI(tools);
@@ -2292,14 +2848,14 @@ async function streamAnthropicMessages(messages, tools, options = {}) {
       ...(runtime.config.headers || {}),
     },
     body: JSON.stringify(makeBody(includeTools)),
-    signal: runtime.abortController.signal,
+    signal: abort.signal,
   });
 
   let response = await requestWithRetry(
     () => request(activeTools.length > 0),
     {
       retries: 3,
-      signal: runtime.abortController.signal,
+      signal: abort.signal,
       onRetry: ({ attempt, delayMs, status }) => send({ type: "model_retry", sessionId, attempt, delayMs, status }),
     },
   );
@@ -2348,7 +2904,15 @@ async function streamChat(messages, tools, options = {}) {
   if (modelProtocol() === "anthropic") {
     return streamAnthropicMessages(messages, tools, options);
   }
-  runtime.abortController = new AbortController();
+  const abort = createRequestAbort();
+  try {
+    return await streamOpenAIChatInner(messages, tools, options, abort);
+  } finally {
+    releaseRequestAbort(abort);
+  }
+}
+
+async function streamOpenAIChatInner(messages, tools, options, abort) {
   const sessionId = options.sessionId || runtime.sessionId;
   const deltaEmitter = createAssistantDeltaEmitter(options);
   const activeTools = options.allowTools === false ? [] : tools;
@@ -2376,14 +2940,14 @@ async function streamChat(messages, tools, options = {}) {
       ...(runtime.config.headers || {}),
     },
     body: JSON.stringify(makeBody(includeTools)),
-    signal: runtime.abortController.signal,
+    signal: abort.signal,
   });
 
   let response = await requestWithRetry(
     () => request(activeTools.length > 0),
     {
       retries: 3,
-      signal: runtime.abortController.signal,
+      signal: abort.signal,
       onRetry: ({ attempt, delayMs, status }) => send({ type: "model_retry", sessionId, attempt, delayMs, status }),
     },
   );
@@ -2459,15 +3023,21 @@ async function finishWithoutMoreTools(loopMessages, sessionId = runtime.sessionI
   send({ type: "assistant_done", sessionId, messageId });
 }
 
-async function executeToolCall(call, sessionId = runtime.sessionId) {
+async function executeToolCall(call, sessionId = runtime.sessionId, agentContext = null) {
   const name = call.function.name;
   const args = parseToolArgs(call.function.arguments);
   const id = call.id || randomUUID();
-  send({ type: "tool_pending", sessionId, id, tool: name, arguments: args });
+  // agentId/agentLabel 让界面能把子 agent 的工具调用归到它自己的分组下。
+  const origin = agentContext
+    ? { agentId: agentContext.agentId, agentRole: agentContext.role, agentLabel: agentContext.label }
+    : {};
+  if (runtime.telemetry) runtime.telemetry.toolCalls += 1;
+  send({ type: "tool_pending", sessionId, id, tool: name, arguments: args, ...origin });
   try {
     const builtIn = await runBuiltInTool(name, args, sessionId);
     if (builtIn) {
-      send({ type: "tool_result", sessionId, id, tool: name, ok: builtIn.ok, content: builtIn.content });
+      trackMutation(name, args, builtIn);
+      send({ type: "tool_result", sessionId, id, tool: name, ok: builtIn.ok, content: builtIn.content, ...origin });
       return builtIn.content;
     }
     for (const client of runtime.mcpClients.values()) {
@@ -2483,20 +3053,23 @@ async function executeToolCall(call, sessionId = runtime.sessionId) {
         },
         sessionId,
       );
-      send({ type: "tool_result", sessionId, id, tool: name, ok: result.ok, content: result.content });
+      send({ type: "tool_result", sessionId, id, tool: name, ok: result.ok, content: result.content, ...origin });
       return result.content;
     }
     const content = `Unknown tool: ${name}`;
-    send({ type: "tool_result", sessionId, id, tool: name, ok: false, content });
+    send({ type: "tool_result", sessionId, id, tool: name, ok: false, content, ...origin });
     return content;
   } catch (error) {
     const content = error.message || String(error);
-    send({ type: "tool_result", sessionId, id, tool: name, ok: false, content });
+    send({ type: "tool_result", sessionId, id, tool: name, ok: false, content, ...origin });
     return content;
   }
 }
 
 function builtInToolDescriptor(name) {
+  if (name === "update_plan") return { kind: "update_plan", name, displayName: "更新计划", source: "harness" };
+  if (name === "dispatch_agents") return { kind: "dispatch_agents", name, displayName: "派发子 agent", source: "harness" };
+  if (name === "engineer_loop") return { kind: "engineer_loop", name, displayName: "工程师循环", source: "harness" };
   if (name === "list_skills") return { kind: "list_skills", name, displayName: name, source: "local" };
   if (name === "read_skill") return { kind: "skill_read", name, displayName: name, source: "local" };
   if (name === "run_skill_script") return { kind: "skill_script", name, displayName: name, source: "local" };
@@ -2504,6 +3077,9 @@ function builtInToolDescriptor(name) {
   if (name === "apply_patch") return { kind: "apply_patch", name, displayName: name, source: "local" };
   if (name === "file_search") return { kind: "file_search", name, displayName: name, source: "local" };
   if (name === "memory_manage") return { kind: "memory_manage", name, displayName: name, source: "local" };
+  if (name === "memory_write") return { kind: "memory_note_write", name, displayName: "写入记忆笔记", source: "memory" };
+  if (name === "memory_recall") return { kind: "memory_recall", name, displayName: "召回记忆", source: "memory" };
+  if (name === "memory_forget") return { kind: "memory_note_write", name, displayName: "删除记忆笔记", source: "memory" };
   if (name === "session_search") return { kind: "session_search", name, displayName: name, source: "local" };
   if (name === "propose_skill_evolution") return { kind: "propose_skill_evolution", name, displayName: name, source: "local" };
   if (name === "list_evolution_candidates") return { kind: "list_evolution_candidates", name, displayName: name, source: "local" };
@@ -2522,13 +3098,25 @@ function descriptorForToolCall(call) {
   return { kind: "unknown", name, displayName: name, source: "model" };
 }
 
+// 同名同参的调用反复出现，说明 agent 在原地打转，需要在下一轮提示它换路径。
+function trackToolRepeats(calls) {
+  return (Array.isArray(calls) ? calls : []).map((call) => {
+    const name = call?.function?.name || "";
+    const record = recordToolSignature(
+      runtime.loopGuard,
+      toolCallSignature(name, parseToolArgs(call?.function?.arguments)),
+    );
+    return { tool: name, ...record };
+  });
+}
+
 function toolCallNeedsSequentialExecution(call) {
   const descriptor = descriptorForToolCall(call);
   const args = parseToolArgs(call?.function?.arguments);
   return classifyToolRisk(descriptor, args) === "confirm";
 }
 
-async function executeToolCalls(calls, sessionId = runtime.sessionId) {
+async function executeToolCalls(calls, sessionId = runtime.sessionId, agentContext = null) {
   const toolCalls = Array.isArray(calls) ? calls : [];
   const results = new Array(toolCalls.length);
   let parallel = [];
@@ -2538,7 +3126,7 @@ async function executeToolCalls(calls, sessionId = runtime.sessionId) {
     const batch = parallel;
     parallel = [];
     await Promise.all(batch.map(async ({ call, index }) => {
-      results[index] = await executeToolCall(call, sessionId);
+      results[index] = await executeToolCall(call, sessionId, agentContext);
     }));
   };
 
@@ -2546,7 +3134,7 @@ async function executeToolCalls(calls, sessionId = runtime.sessionId) {
     const call = toolCalls[index];
     if (toolCallNeedsSequentialExecution(call)) {
       await flushParallel();
-      results[index] = await executeToolCall(call, sessionId);
+      results[index] = await executeToolCall(call, sessionId, agentContext);
     } else {
       parallel.push({ call, index });
     }
@@ -2694,11 +3282,13 @@ async function configure(payload) {
   runtime.memoryPath = join(runtime.configDir, "memory", "MEMORY.md");
   runtime.userProfilePath = join(runtime.configDir, "memory", "USER.md");
   runtime.evolutionPath = join(runtime.configDir, "evolution", "candidates.json");
+  runtime.notesRoot = join(runtime.configDir, "memory", "notes");
   runtime.managedSkillsRoot = join(runtime.configDir, "skills");
   await mkdir(runtime.configDir, { recursive: true });
   await initializePersistentStores();
   await refreshSkills();
   await loadMemorySnapshot();
+  await loadNotes();
   await loadHistory();
   await startMCPServers();
   runtime.configured = true;
@@ -2732,14 +3322,46 @@ async function runAgent(userText, attachments = [], sessionId = runtime.sessionI
   if (isCurrentSession(runSessionId)) {
     await compactIfNeeded(runSessionId);
   }
+  // 按本轮提问召回相关笔记，正文只在这一轮进上下文。
+  const recallLimit = boundedNumber(runtime.config.memoryAutoRecallLimit, 3, 0, 8);
+  runtime.recalledNotes = recallLimit > 0 ? recallNotesForText(messageText, recallLimit) : [];
+  if (runtime.recalledNotes.length) {
+    send({
+      type: "memory_recalled",
+      sessionId: runSessionId,
+      notes: runtime.recalledNotes.map((note) => ({ name: note.name, type: note.type, description: note.description })),
+    });
+  }
   const tools = openAITools();
+  const harnessOn = runtime.config.harnessEnabled !== false;
+  const maxTurns = boundedNumber(runtime.config.maxToolTurns, HARNESS_DEFAULTS.maxToolTurns, 1, 60);
+  runtime.plan = [];
+  runtime.loopGuard = createLoopGuardState();
+  runtime.telemetry = createRunTelemetry({ maxToolTurns: maxTurns });
+  emitHarnessStatus(runSessionId);
+
   let loopMessages = contextMessagesForTurn(messageText);
-  for (let turn = 0; turn < MAX_TOOL_TURNS; turn += 1) {
+  for (let turn = 0; turn < maxTurns; turn += 1) {
     if (isCancelledSession(runSessionId)) return;
+    runtime.telemetry.turn = turn + 1;
     const messageId = randomUUID();
     const result = await streamChat(loopMessages, tools, { sessionId: runSessionId, messageId });
     if (isCancelledSession(runSessionId)) return;
     if (!result.toolCalls.length) {
+      // 收尾自检闸门：本轮真改过东西却还没自检，就退回循环里先验证一次。
+      const verifyNotice = harnessOn && runtime.config.verifyGateEnabled !== false
+        ? verificationNotice(runtime.telemetry)
+        : "";
+      if (verifyNotice && turn < maxTurns - 1) {
+        runtime.telemetry.verifyRequested = true;
+        if (result.text) {
+          loopMessages.push({ role: "assistant", content: result.text });
+          send({ type: "assistant_segment_done", sessionId: runSessionId, messageId });
+        }
+        loopMessages.push({ role: "system", content: verifyNotice });
+        emitHarnessStatus(runSessionId);
+        continue;
+      }
       if (isCurrentSession(runSessionId)) {
         runtime.messages.push({ role: "assistant", content: result.text });
         await saveHistory();
@@ -2760,11 +3382,21 @@ async function runAgent(userText, attachments = [], sessionId = runtime.sessionI
     if (result.text) {
       send({ type: "assistant_segment_done", sessionId: runSessionId, messageId });
     }
+    const repeats = harnessOn ? trackToolRepeats(result.toolCalls) : [];
     const toolResults = await executeToolCalls(result.toolCalls, runSessionId);
     if (isCancelledSession(runSessionId)) return;
     for (let index = 0; index < result.toolCalls.length; index += 1) {
       const call = result.toolCalls[index];
       loopMessages.push({ role: "tool", tool_call_id: call.id, content: toolResults[index] });
+    }
+    if (harnessOn) {
+      const notices = [loopGuardNotice(repeats), budgetNotice({ turn: turn + 1, maxTurns })].filter(Boolean);
+      if (notices.length) loopMessages.push({ role: "system", content: notices.join("\n\n") });
+      // 计划会在循环中途被 update_plan 改写，系统提示要跟着刷新，否则模型看不到自己的最新计划。
+      if (loopMessages[0]?.role === "system") {
+        loopMessages[0] = { role: "system", content: systemPromptFor(messageText) };
+      }
+      emitHarnessStatus(runSessionId);
     }
   }
   await finishWithoutMoreTools(loopMessages, runSessionId);
@@ -2773,6 +3405,9 @@ async function runAgent(userText, attachments = [], sessionId = runtime.sessionI
 async function reset(event = {}) {
   runtime.messages = [];
   runtime.contextSummary = "";
+  runtime.plan = [];
+  runtime.telemetry = null;
+  runtime.loopGuard = createLoopGuardState();
   runtime.sessionId = String(event.sessionId || randomUUID());
   runtime.cancelledSessions.delete(runtime.sessionId);
   await loadMemorySnapshot();
@@ -2821,6 +3456,7 @@ async function handleInput(event) {
   if (event.type === "configure") return configure(event);
   if (event.type === "list_memory_audit") return sendMemoryAudit();
   if (event.type === "delete_memory_entry") return mutateMemoryEntryByIndex(event, "remove");
+  if (event.type === "delete_memory_note") return forgetMemoryNote(event);
   if (event.type === "replace_memory_entry") return mutateMemoryEntryByIndex(event, "replace");
   if (event.type === "list_evolution_candidates") return sendEvolutionAudit();
   if (event.type === "reject_evolution_candidate") return rejectEvolutionCandidate(event);
@@ -2845,7 +3481,7 @@ async function handleInput(event) {
   if (event.type === "cancel") {
     const sessionId = String(event.sessionId || runtime.sessionId);
     runtime.cancelledSessions.add(sessionId);
-    runtime.abortController?.abort();
+    abortAllRequests();
     terminateActiveProcesses();
     for (const resolver of runtime.pendingPermissions.values()) {
       resolver(false);

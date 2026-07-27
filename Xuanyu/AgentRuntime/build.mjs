@@ -1,21 +1,32 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)));
-const source = resolve(root, "src/runtime.ts");
-const output = resolve(root, "dist/runtime.mjs");
-const resourceOutput = resolve(root, "../Sources/Xuanyu/Resources/AgentRuntime/runtime.mjs");
-const text = await readFile(source, "utf8");
-const generated = text.replace(/^\/\/ @ts-check\n?/, "// Generated from src/runtime.ts\n");
+const sourceDir = resolve(root, "src");
+const distDir = resolve(root, "dist");
+const resourceDir = resolve(root, "../Sources/Xuanyu/Resources/AgentRuntime");
 
-await mkdir(dirname(output), { recursive: true });
-await writeFile(output, generated);
-await mkdir(dirname(resourceOutput), { recursive: true });
-await writeFile(resourceOutput, generated);
+const sources = (await readdir(sourceDir)).filter((name) => name.endsWith(".ts")).sort();
 
-const check = spawnSync(process.execPath, ["--check", output], {
+await mkdir(distDir, { recursive: true });
+await mkdir(resourceDir, { recursive: true });
+
+const built = [];
+for (const name of sources) {
+  const text = await readFile(resolve(sourceDir, name), "utf8");
+  const generated = text
+    .replace(/^\/\/ @ts-check\n?/, `// Generated from src/${name}\n`)
+    // 运行时加载的是同目录下的 .mjs 兄弟模块，import 说明符要跟着改。
+    .replace(/(\bfrom\s+["']\.\/[^"']+)\.ts(["'])/g, "$1.mjs$2");
+  const outputName = name.replace(/\.ts$/, ".mjs");
+  await writeFile(resolve(distDir, outputName), generated);
+  await writeFile(resolve(resourceDir, outputName), generated);
+  built.push(outputName);
+}
+
+const check = spawnSync(process.execPath, ["--check", resolve(distDir, "runtime.mjs")], {
   encoding: "utf8",
 });
 
@@ -24,5 +35,5 @@ if (check.status !== 0) {
   process.exit(check.status ?? 1);
 }
 
-console.log(`Built ${output}`);
-console.log(`Synced ${resourceOutput}`);
+console.log(`Built ${built.join(", ")} -> ${distDir}`);
+console.log(`Synced ${resourceDir}`);

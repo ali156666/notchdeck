@@ -23,13 +23,17 @@
 - Apple Music 与 Spotify 播放控制、歌词展示和 AirPods 电量读取
 - 收起状态歌词悬浮展示
 - 快捷应用启动、剪贴板历史、系统看板、天气、日历与番茄钟
-- 独立 Node Agent runtime
+- 编码会话监控：识别 ChatGPT.app、Claude Code 与 Codex，缩小态显示运行来源，完成后通知
+- Codex Pet 自选：直接使用 `~/.codex/pets` 中的自定义吉祥物
+- 独立 Node Agent runtime，支持冷热分层记忆、任务脚手架、多智能体编队与工程师循环
 - OpenAI-compatible 与 Anthropic-compatible 模型接口
 - 应用内配置模型、API key、自定义 skills 和本地 MCP servers
 - 工具调用确认、文件上传、桌面文件拖入识别和附件对话
 - 长按左右 Command 0.5 秒语音输入，支持 Apple 语音识别与离线 SenseVoice 本地模型
 - 松开 Command 后先审核识别文本，确认后再发送给 Agent 执行
 - 语音输入识别、审核和发送 HUD 已统一为液态玻璃样式
+
+完整版本变化见 [更新日志](./CHANGELOG.md)。
 
 ## 截图
 

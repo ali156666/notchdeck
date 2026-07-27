@@ -43,6 +43,8 @@ struct NotchPanelView: View {
             return min(760, screen.frame.width - 40)
         case .agent:
             return min(900, screen.frame.width - 40)
+        case .code:
+            return min(760, screen.frame.width - 40)
         }
     }
 
@@ -95,10 +97,15 @@ struct NotchPanelView: View {
             state.pomodoroCollapsedReminder = state.pomodoro.noticeText
             NSSound(named: "Glass")?.play()
         }
+        .onChange(of: state.codeWatch.completionNoticeToken) { _, _ in
+            guard !state.isExpanded, let completion = state.codeWatch.lastCompletion else { return }
+            state.codeWatchCollapsedReminder = completion.collapsedTitle
+        }
         .onChange(of: state.isExpanded) { _, expanded in
             if expanded {
                 state.agentCollapsedReminder = nil
                 state.pomodoroCollapsedReminder = nil
+                state.codeWatchCollapsedReminder = nil
                 state.agent.clearAttention()
             }
         }
@@ -143,9 +150,13 @@ struct NotchPanelView: View {
         .onTapGesture {
             guard !state.isExpanded, !state.voiceInput.prefersLargeHUD else { return }
             withAnimation(.snappy(duration: 0.32)) {
+                if shouldShowCodeWatchCollapsed {
+                    state.mode = .code
+                }
                 state.isExpanded = true
                 state.agentCollapsedReminder = nil
                 state.pomodoroCollapsedReminder = nil
+                state.codeWatchCollapsedReminder = nil
             }
         }
     }
@@ -222,6 +233,9 @@ struct NotchPanelView: View {
                     settingsTab: $state.agentSettingsTab
                 )
                     .frame(height: min(500, screen.frame.height - 92))
+            case .code:
+                CodeWatchPanel(service: state.codeWatch)
+                    .frame(height: 320)
             }
         }
     }
@@ -247,6 +261,13 @@ struct NotchPanelView: View {
                     HeaderPageButton(title: "剪贴板", icon: "doc.on.clipboard", selected: state.mode == .clipboard) {
                         withAnimation(.snappy(duration: 0.22)) {
                             state.mode = .clipboard
+                            state.agentShowsSettings = false
+                        }
+                    }
+
+                    HeaderPageButton(title: "编码", icon: "terminal", selected: state.mode == .code) {
+                        withAnimation(.snappy(duration: 0.22)) {
+                            state.mode = .code
                             state.agentShowsSettings = false
                         }
                     }
@@ -678,6 +699,8 @@ struct NotchPanelView: View {
                 collapsedNotchDropdownBar
             } else if state.voiceInput.shouldDisplay {
                 collapsedStatusBar
+            } else if shouldShowCodeWatchCollapsed {
+                collapsedStatusBar
             } else if state.shouldShowCollapsedLyrics {
                 collapsedLyricsBar
             } else {
@@ -709,6 +732,8 @@ struct NotchPanelView: View {
 
             if state.voiceInput.state == .arming {
                 voiceArmingIndicator
+            } else if shouldShowCodeWatchCollapsed {
+                codeWatchCollapsedMascot(size: 28)
             } else {
                 Image(systemName: collapsedDropdownIcon)
                     .font(.system(size: 12, weight: .bold))
@@ -759,6 +784,8 @@ struct NotchPanelView: View {
         HStack(spacing: 9) {
             if state.voiceInput.state == .arming {
                 voiceArmingIndicator
+            } else if shouldShowCodeWatchCollapsed {
+                codeWatchCollapsedMascot(size: 27)
             } else {
                 Image(systemName: collapsedIcon)
                     .font(.system(size: 12, weight: .bold))
@@ -803,6 +830,14 @@ struct NotchPanelView: View {
                 Circle()
                     .fill(XYGlass.statusBusy)
                     .frame(width: 7, height: 7)
+            } else if state.codeWatch.hasActiveSessions {
+                Circle()
+                    .fill(XYGlass.statusBusy)
+                    .frame(width: 7, height: 7)
+            } else if state.codeWatchCollapsedReminder != nil {
+                Circle()
+                    .fill(XYGlass.statusAlert)
+                    .frame(width: 7, height: 7)
             } else if state.agentCollapsedReminder != nil {
                 Circle()
                     .fill(XYGlass.statusPaused)
@@ -820,7 +855,27 @@ struct NotchPanelView: View {
     }
 
     private var shouldCenterCollapsedDropdown: Bool {
-        state.voiceInput.shouldDisplay || state.pomodoro.status == .running
+        state.voiceInput.shouldDisplay ||
+        shouldShowCodeWatchCollapsed ||
+        state.pomodoro.status == .running
+    }
+
+    private var shouldShowCodeWatchCollapsed: Bool {
+        state.codeWatch.hasActiveSessions || state.codeWatchCollapsedReminder != nil
+    }
+
+    private func codeWatchCollapsedMascot(size: CGFloat) -> some View {
+        let active = state.codeWatch.primaryActiveSession
+        let source = active?.snapshot.source
+            ?? state.codeWatch.lastCompletion?.client.source
+            ?? state.codeWatch.summary.primarySource
+        let status = active?.snapshot.status ?? .idle
+        return CodeWatchMascotView(
+            source: source,
+            status: status,
+            size: size,
+            pet: state.codeWatch.selectedPet
+        )
     }
 
     private var collapsedIcon: String {
@@ -831,6 +886,7 @@ struct NotchPanelView: View {
         if state.voiceInput.state == .reviewing { return "text.bubble.fill" }
         if state.voiceInput.state == .submitted { return "checkmark.circle.fill" }
         if state.voiceInput.state == .error { return "exclamationmark.triangle.fill" }
+        if shouldShowCodeWatchCollapsed { return "terminal" }
         if state.agentCollapsedReminder != nil { return "checkmark.message" }
         if state.agent.isBusy { return "sparkles" }
         if state.pomodoro.status == .completed || state.pomodoroCollapsedReminder != nil { return "timer" }
@@ -840,6 +896,11 @@ struct NotchPanelView: View {
 
     private var collapsedTitle: String {
         if state.voiceInput.shouldDisplay { return state.voiceInput.displayText }
+        if shouldShowCodeWatchCollapsed {
+            return state.codeWatch.hasActiveSessions
+                ? state.codeWatch.collapsedStatusTitle
+                : state.codeWatchCollapsedReminder ?? state.codeWatch.collapsedStatusTitle
+        }
         if let reminder = state.agentCollapsedReminder { return reminder }
         if state.agent.isBusy { return "悬屿运行中" }
         if let reminder = state.pomodoroCollapsedReminder { return reminder }
@@ -856,6 +917,7 @@ struct NotchPanelView: View {
         if state.voiceInput.state == .reviewing { return "text.bubble.fill" }
         if state.voiceInput.state == .submitted { return "checkmark.circle.fill" }
         if state.voiceInput.state == .error { return "exclamationmark.triangle.fill" }
+        if shouldShowCodeWatchCollapsed { return "terminal" }
         if state.agentCollapsedReminder != nil { return "checkmark.message" }
         if state.agent.isBusy { return "sparkles" }
         if state.pomodoro.status == .completed || state.pomodoroCollapsedReminder != nil { return "timer" }
@@ -866,6 +928,11 @@ struct NotchPanelView: View {
 
     private func collapsedDropdownTitle(at date: Date) -> String {
         if state.voiceInput.shouldDisplay { return state.voiceInput.displayText }
+        if shouldShowCodeWatchCollapsed {
+            return state.codeWatch.hasActiveSessions
+                ? state.codeWatch.collapsedStatusTitle
+                : state.codeWatchCollapsedReminder ?? state.codeWatch.collapsedStatusTitle
+        }
         if let reminder = state.agentCollapsedReminder { return reminder }
         if state.agent.isBusy { return "悬屿运行中" }
         if let reminder = state.pomodoroCollapsedReminder { return reminder }

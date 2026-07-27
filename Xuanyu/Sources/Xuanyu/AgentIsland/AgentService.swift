@@ -19,6 +19,8 @@ final class AgentService {
     var evolutionCandidateCount = 0
     var memoryEntries: [AgentMemoryEntry] = []
     var userMemoryEntries: [AgentMemoryEntry] = []
+    var memoryNotes: [AgentMemoryNote] = []
+    var recalledNoteNames: [String] = []
     var evolutionCandidates: [AgentEvolutionCandidate] = []
     var pendingAttachments: [AgentAttachment] = []
     var conversations: [AgentConversation] = []
@@ -26,6 +28,17 @@ final class AgentService {
     var contextSummary = ""
     var attentionToken = 0
     var attentionText = ""
+    var plan: [AgentPlanStep] = []
+    var subAgentRuns: [AgentSubAgentRun] = []
+    var harnessPhase = ""
+
+    var activePlanStep: AgentPlanStep? {
+        plan.first { $0.status == .inProgress }
+    }
+
+    var runningSubAgentCount: Int {
+        subAgentRuns.filter(\.isRunning).count
+    }
 
     @ObservationIgnored private var process: Process?
     @ObservationIgnored private var inputPipe: Pipe?
@@ -178,6 +191,11 @@ final class AgentService {
         status = .running
         statusText = attachments.isEmpty ? "思考中" : "识别文件中"
         attentionText = ""
+        // 计划、编队和本轮召回都是单轮作用域的，新问题开始时清空。
+        recalledNoteNames = []
+        plan = []
+        subAgentRuns = []
+        harnessPhase = ""
         if explicitAttachments == nil {
             pendingAttachments.removeAll()
         }
@@ -377,6 +395,13 @@ final class AgentService {
             "index": entry.index,
             "oldText": entry.text,
             "content": trimmed,
+        ])
+    }
+
+    func deleteMemoryNote(_ note: AgentMemoryNote) {
+        writeJSON([
+            "type": "delete_memory_note",
+            "name": note.name,
         ])
     }
 
@@ -612,6 +637,7 @@ final class AgentService {
         case "memory_audit":
             memoryEntries = decodeArray(object["memory"], as: [AgentMemoryEntry].self)
             userMemoryEntries = decodeArray(object["user"], as: [AgentMemoryEntry].self)
+            memoryNotes = decodeArray(object["notes"], as: [AgentMemoryNote].self)
             if let usage = object["memoryUsage"] as? [String: Any] {
                 memoryUsageText = usageText(usage["memory"])
                 userMemoryUsageText = usageText(usage["user"])
@@ -623,6 +649,56 @@ final class AgentService {
             evolutionCandidateCount = object["count"] as? Int ?? evolutionCandidateCount
         case "skills_updated":
             knownSkills = decodeRuntimeSkills(object["skills"])
+        case "memory_recalled":
+            let notes = object["notes"] as? [[String: Any]] ?? []
+            recalledNoteNames = notes.compactMap { $0["name"] as? String }
+        case "memory_notes_updated":
+            break
+        case "plan_updated":
+            plan = decodePlanSteps(object["plan"])
+            if let active = activePlanStep {
+                statusText = active.step
+            }
+        case "harness_status":
+            harnessPhase = object["phase"] as? String ?? ""
+        case "dispatch_started":
+            let count = object["count"] as? Int ?? 0
+            let mode = object["mode"] as? String == "sequential" ? "串行" : "并行"
+            statusText = "\(mode)派发 \(count) 个子 agent"
+        case "subagent_started":
+            guard let agentId = object["agentId"] as? String else { return }
+            let run = AgentSubAgentRun(
+                id: agentId,
+                role: object["role"] as? String ?? "",
+                label: object["label"] as? String ?? "",
+                goal: object["goal"] as? String ?? "",
+                isRunning: true,
+                succeeded: false,
+                turns: 0
+            )
+            if let index = subAgentRuns.firstIndex(where: { $0.id == agentId }) {
+                subAgentRuns[index] = run
+            } else {
+                subAgentRuns.append(run)
+            }
+            statusText = "\(run.roleTitle)子 agent：\(run.label)"
+        case "subagent_done":
+            guard let agentId = object["agentId"] as? String,
+                  let index = subAgentRuns.firstIndex(where: { $0.id == agentId }) else { return }
+            subAgentRuns[index].isRunning = false
+            subAgentRuns[index].succeeded = object["ok"] as? Bool ?? false
+            subAgentRuns[index].turns = object["turns"] as? Int ?? 0
+        case "dispatch_done":
+            let failed = object["failed"] as? Int ?? 0
+            statusText = failed > 0 ? "子 agent 有 \(failed) 个失败" : "子 agent 全部完成"
+        case "engineer_loop_round":
+            let round = object["round"] as? Int ?? 0
+            let rounds = object["rounds"] as? Int ?? 0
+            statusText = "工程师循环 第 \(round)/\(rounds) 轮"
+        case "engineer_loop_verdict":
+            statusText = object["verdict"] as? String == "approved" ? "评审通过" : "评审要求返工"
+        case "subagent_delta":
+            break
         case "error":
             guard eventSessionId == activeConversationId else {
                 finishAssistantMessage(
@@ -847,6 +923,15 @@ final class AgentService {
             return []
         }
         return decoded
+    }
+
+    private func decodePlanSteps(_ value: Any?) -> [AgentPlanStep] {
+        guard let raw = value as? [[String: Any]] else { return [] }
+        return raw.enumerated().compactMap { index, item in
+            guard let step = item["step"] as? String, !step.isEmpty else { return nil }
+            let status = AgentPlanStatus(rawValue: item["status"] as? String ?? "") ?? .pending
+            return AgentPlanStep(id: index, step: step, status: status)
+        }
     }
 
     private func decodeRuntimeSkills(_ value: Any?) -> [AgentRuntimeSkill] {
@@ -1224,6 +1309,8 @@ private extension AgentConfig {
             "contextLimit": contextLimit,
             "historyLimit": historyLimit,
             "memoryEnabled": memoryEnabled,
+            "memoryNotesEnabled": memoryNotesEnabled,
+            "memoryAutoRecallLimit": memoryAutoRecallLimit,
             "userProfileEnabled": userProfileEnabled,
             "memoryCharLimit": memoryCharLimit,
             "userCharLimit": userCharLimit,
@@ -1235,6 +1322,12 @@ private extension AgentConfig {
             "autoTitleEnabled": autoTitleEnabled,
             "evolutionEnabled": evolutionEnabled,
             "lazyModeEnabled": lazyModeEnabled,
+            "harnessEnabled": harnessEnabled,
+            "planningEnabled": planningEnabled,
+            "verifyGateEnabled": verifyGateEnabled,
+            "multiAgentEnabled": multiAgentEnabled,
+            "maxToolTurns": maxToolTurns,
+            "subAgentConcurrency": subAgentConcurrency,
             "mcpServers": mcpServers.map(\.dictionaryValue),
             "customSkills": customSkills.map(\.dictionaryValue),
         ]
