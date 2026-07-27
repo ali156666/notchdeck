@@ -366,6 +366,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         state.media.start()
         state.agent.start()
         state.clipboard.start()
+        state.codeWatch.start()
     }
 
     private func stopServices() {
@@ -375,6 +376,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         state.pomodoro.stop()
         state.dashboard.stop()
         state.clipboard.stop()
+        state.codeWatch.stop()
         servicesStarted = false
     }
 }

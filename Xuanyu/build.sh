@@ -17,8 +17,30 @@ if [ -z "$NODE_BIN" ]; then
     exit 1
 fi
 "$NODE_BIN" "$ROOT_DIR/AgentRuntime/build.mjs"
-swift build
-BIN_DIR="$(swift build --show-bin-path)"
+
+SWIFT_BUILD_ARGS=()
+# SwiftPM 新的 swiftbuild 构建系统在本工程的两个 binaryTarget 上会撞车：
+# 它们各自带一份 Headers/module.modulemap，会被拷进同一个 include/ 目录。
+# 旧的 native 构建系统没有这个问题，只要它还在就优先用。
+if swift build --help 2>/dev/null | grep -q -- "--build-system"; then
+    SWIFT_BUILD_ARGS+=(--build-system native)
+fi
+
+# 只装了 Command Line Tools 时，它的 macOS 27 SDK 需要 SwiftUI 宏插件，
+# 而该插件只随完整 Xcode 分发，于是 @State 一律展开失败。
+# 这种情况下退回同一份 CLT 里自带的 macOS 26.x SDK，它不需要宏插件。
+if [ -z "${SDKROOT:-}" ] && [ ! -d "$(xcode-select -p)/Platforms" ]; then
+    for candidate in /Library/Developer/CommandLineTools/SDKs/MacOSX26*.sdk; do
+        if [ -d "$candidate" ]; then
+            export SDKROOT="$candidate"
+            echo "Command Line Tools only: building against $(basename "$candidate")"
+            break
+        fi
+    done
+fi
+
+swift build "${SWIFT_BUILD_ARGS[@]}"
+BIN_DIR="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
 
 rm -rf "$ROOT_DIR/dist/$APP_NAME.app" "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
@@ -27,7 +49,8 @@ cp "$BIN_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp "$ROOT_DIR/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp "$ROOT_DIR/Sources/Xuanyu/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 mkdir -p "$APP_BUNDLE/Contents/Resources/AgentRuntime"
-cp "$ROOT_DIR/AgentRuntime/dist/runtime.mjs" "$APP_BUNDLE/Contents/Resources/AgentRuntime/runtime.mjs"
+# runtime.mjs 会 import 同目录下的 harness.mjs / subagents.mjs，必须整组拷贝。
+cp "$ROOT_DIR"/AgentRuntime/dist/*.mjs "$APP_BUNDLE/Contents/Resources/AgentRuntime/"
 cp -R "$ROOT_DIR/Sources/Xuanyu/Resources/AgentRuntime/skills" "$APP_BUNDLE/Contents/Resources/AgentRuntime/skills"
 
 if [ -d "$BIN_DIR/Xuanyu_Xuanyu.bundle" ]; then

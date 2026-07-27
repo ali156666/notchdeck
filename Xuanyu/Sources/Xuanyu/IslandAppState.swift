@@ -11,12 +11,14 @@ final class IslandAppState {
     let dashboard = SystemDashboardService()
     let clipboard = ClipboardService()
     let voiceInput = VoiceInputService()
+    let codeWatch = CodeWatchService()
     var isExpanded = false
     var mode: IslandMode = .dashboard
     var agentShowsSettings = false
     var agentSettingsTab: AgentSettingsTab = .model
     var agentCollapsedReminder: String?
     var pomodoroCollapsedReminder: String?
+    var codeWatchCollapsedReminder: String?
 
     var shouldShowCollapsedLyrics: Bool {
         return media.playback.isPlaying && media.playback.hasPlayableTrack
@@ -25,6 +27,8 @@ final class IslandAppState {
     var usesTallCollapsedDropdown: Bool {
         return voiceInput.shouldDisplay ||
         shouldShowCollapsedLyrics ||
+        codeWatch.hasActiveSessions ||
+        codeWatchCollapsedReminder != nil ||
         pomodoro.status == .running ||
         pomodoro.status == .completed ||
         pomodoroCollapsedReminder != nil
@@ -34,6 +38,8 @@ final class IslandAppState {
         return !voiceInput.shouldDisplay &&
         !agent.isBusy &&
         agentCollapsedReminder == nil &&
+        !codeWatch.hasActiveSessions &&
+        codeWatchCollapsedReminder == nil &&
         pomodoro.status != .running &&
         pomodoro.status != .completed &&
         pomodoroCollapsedReminder == nil

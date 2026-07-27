@@ -219,6 +219,7 @@ struct AgentIslandPanel: View {
                 case .model:
                     VStack(spacing: 12) {
                         modelSettings
+                        harnessSettings
                         voiceInputSettings
                     }
                 case .memory:
@@ -239,6 +240,67 @@ struct AgentIslandPanel: View {
         .onChange(of: settingsTab) { _, tab in
             if tab == .memory {
                 service.refreshMemoryAudit()
+            }
+        }
+    }
+
+    private var harnessSettings: some View {
+        SettingsSection(title: "任务脚手架与多智能体", icon: "square.stack.3d.up") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("脚手架给循环加上计划账本、重复调用检测、轮次预算和收尾自检；编队让悬屿把独立子任务分给带角色的子 agent 并行处理。")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.52))
+
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Label("脚手架", systemImage: "list.bullet.rectangle")
+                            .font(.system(size: 12, weight: .bold))
+                        Toggle(isOn: $draftConfig.harnessEnabled) {
+                            Text("启用任务脚手架")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .toggleStyle(.switch)
+                        Toggle(isOn: $draftConfig.planningEnabled) {
+                            Text("多步任务先立计划")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .toggleStyle(.switch)
+                        .disabled(!draftConfig.harnessEnabled)
+                        Toggle(isOn: $draftConfig.verifyGateEnabled) {
+                            Text("改完文件强制自检")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .toggleStyle(.switch)
+                        .disabled(!draftConfig.harnessEnabled)
+                        Stepper(value: $draftConfig.maxToolTurns, in: 4...60) {
+                            Text("单轮最多 \(draftConfig.maxToolTurns) 次工具循环")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                    }
+                    .agentSettingCard()
+
+                    VStack(alignment: .leading, spacing: 7) {
+                        Label("子 agent 编队", systemImage: "person.3")
+                            .font(.system(size: 12, weight: .bold))
+                        Toggle(isOn: $draftConfig.multiAgentEnabled) {
+                            Text("允许派发子 agent")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .toggleStyle(.switch)
+                        Text("角色：探路（只读）、执行、评审（对抗性只读）、验证（可跑命令不改文件）、汇总。子 agent 不能再派发子 agent，危险工具仍逐个弹确认。")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.48))
+                        Stepper(value: $draftConfig.subAgentConcurrency, in: 1...6) {
+                            Text("并行上限 \(draftConfig.subAgentConcurrency) 个")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .disabled(!draftConfig.multiAgentEnabled)
+                        Text("并行会同时消耗多路 token，按需调低。")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.42))
+                    }
+                    .agentSettingCard()
+                }
             }
         }
     }
@@ -343,6 +405,33 @@ struct AgentIslandPanel: View {
                         onDelete: service.deleteMemoryEntry
                     )
                 }
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Label("记忆笔记（冷存档）", systemImage: "tray.full")
+                        .font(.system(size: 12, weight: .bold))
+                    Toggle(isOn: $draftConfig.memoryNotesEnabled) {
+                        Text("启用记忆笔记")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .toggleStyle(.switch)
+                    Text("一条事实一个笔记，条数不设上限。上下文里常驻的只有名字和描述组成的索引，正文按当前问题的相关性召回，所以记得多不会挤占上下文。")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.48))
+                    Stepper(value: $draftConfig.memoryAutoRecallLimit, in: 0...8) {
+                        Text(draftConfig.memoryAutoRecallLimit == 0
+                             ? "关闭自动召回，只在 agent 主动调用时取"
+                             : "每轮自动召回最多 \(draftConfig.memoryAutoRecallLimit) 条正文")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .disabled(!draftConfig.memoryNotesEnabled)
+                }
+                .agentSettingCard()
+
+                MemoryNoteList(
+                    notes: service.memoryNotes,
+                    highlighted: Set(service.recalledNoteNames),
+                    onDelete: service.deleteMemoryNote
+                )
 
                 EvolutionCandidateList(
                     candidates: service.evolutionCandidates,
@@ -716,6 +805,7 @@ struct AgentIslandPanel: View {
                     if service.messages.isEmpty && service.toolEvents.isEmpty {
                         emptyState
                     }
+                    HarnessStrip(plan: service.plan, runs: service.subAgentRuns)
                     ForEach(timelineItems) { item in
                         switch item {
                         case let .message(message):
@@ -1307,6 +1397,110 @@ private struct MemoryAuditList: View {
             }
         }
         .agentSettingCard()
+    }
+}
+
+private struct MemoryNoteList: View {
+    let notes: [AgentMemoryNote]
+    let highlighted: Set<String>
+    let onDelete: (AgentMemoryNote) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Image(systemName: "tray.full")
+                    .font(.system(size: 11, weight: .bold))
+                Text("记忆笔记")
+                    .font(.system(size: 12, weight: .bold))
+                Text("\(notes.count)")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.38))
+            }
+            .foregroundStyle(.white.opacity(0.74))
+
+            if notes.isEmpty {
+                EmptyConfigHint(text: "还没有记忆笔记。悬屿会在遇到值得长期记住的事实时自己写入。")
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(notes) { note in
+                        MemoryNoteRow(
+                            note: note,
+                            isRecalled: highlighted.contains(note.name),
+                            onDelete: onDelete
+                        )
+                    }
+                }
+            }
+        }
+        .agentSettingCard()
+    }
+}
+
+private struct MemoryNoteRow: View {
+    let note: AgentMemoryNote
+    let isRecalled: Bool
+    let onDelete: (AgentMemoryNote) -> Void
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                Text(note.typeLabel)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.white.opacity(0.09), in: Capsule())
+                Text(note.name)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .lineLimit(1)
+                if isRecalled {
+                    Text("本轮已召回")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Color(red: 1.0, green: 0.78, blue: 0.32))
+                }
+                Spacer(minLength: 0)
+                if !note.updatedAt.isEmpty {
+                    Text(note.updatedAt)
+                        .font(.system(size: 10, weight: .regular, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.34))
+                }
+                Button {
+                    isExpanded.toggle()
+                } label: {
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                }
+                .buttonStyle(AgentIconButtonStyle())
+                .help(isExpanded ? "收起正文" : "展开正文")
+
+                Button {
+                    onDelete(note)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(AgentIconButtonStyle())
+                .help("删除这条笔记")
+            }
+            Text(note.noteDescription)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.58))
+                .lineLimit(isExpanded ? nil : 2)
+            if isExpanded {
+                Text(note.text)
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .textSelection(.enabled)
+                if !note.links.isEmpty {
+                    Text("关联：\(note.links.joined(separator: "、"))")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.36))
+                }
+            }
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -1914,6 +2108,87 @@ private struct AttachmentChip: View {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: attachment.sizeBytes)
+    }
+}
+
+/// Harness 的当轮任务计划与子 agent 编队状态。两者都为空时整块不渲染。
+private struct HarnessStrip: View {
+    let plan: [AgentPlanStep]
+    let runs: [AgentSubAgentRun]
+
+    var body: some View {
+        if plan.isEmpty && runs.isEmpty {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                if !plan.isEmpty {
+                    Text("任务计划 \(completedCount)/\(plan.count)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.4))
+                    ForEach(plan) { step in
+                        HStack(spacing: 6) {
+                            Image(systemName: step.status.symbol)
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(color(for: step.status))
+                            Text(step.step)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.white.opacity(step.status == .completed ? 0.42 : 0.76))
+                                .strikethrough(step.status == .completed, color: .white.opacity(0.28))
+                                .lineLimit(2)
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+                if !runs.isEmpty {
+                    Text("子 agent 编队")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.4))
+                        .padding(.top, plan.isEmpty ? 0 : 3)
+                    ForEach(runs) { run in
+                        HStack(spacing: 6) {
+                            Image(systemName: icon(for: run))
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(color(for: run))
+                            Text("\(run.roleTitle) · \(run.label)")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.72))
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                            if run.turns > 0 {
+                                Text("\(run.turns) 轮")
+                                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.38))
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+
+    private var completedCount: Int {
+        plan.filter { $0.status == .completed }.count
+    }
+
+    private func color(for status: AgentPlanStatus) -> Color {
+        switch status {
+        case .completed: return Color.green.opacity(0.8)
+        case .inProgress: return Color(red: 1.0, green: 0.78, blue: 0.32)
+        case .pending: return .white.opacity(0.32)
+        }
+    }
+
+    private func icon(for run: AgentSubAgentRun) -> String {
+        if run.isRunning { return "circle.dotted" }
+        return run.succeeded ? "checkmark.circle" : "xmark.circle"
+    }
+
+    private func color(for run: AgentSubAgentRun) -> Color {
+        if run.isRunning { return Color(red: 0.44, green: 0.78, blue: 1.0) }
+        return run.succeeded ? Color.green.opacity(0.8) : Color.red.opacity(0.8)
     }
 }
 

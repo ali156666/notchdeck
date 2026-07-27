@@ -63,7 +63,12 @@
 
 ### Agent
 
+- 编码会话监控：实时显示本机 Claude Code / Codex 会话状态，带像素吉祥物与 8-bit 音效
 - 内置独立 Node Agent runtime，不依赖外部 CLI
+- 分层长期记忆：有界热记忆 + 不限量的记忆笔记，索引常驻、正文按相关性召回
+- 任务脚手架（Harness）：计划账本、重复调用检测、工具轮次预算、改完文件强制自检
+- 多智能体编队：把独立子任务分给探路/执行/评审/验证/汇总五种角色的子 agent 并行或串行处理
+- 工程师循环：实现 → 对抗性评审 → 带评审意见返工，直到通过或用完轮次
 - 支持 OpenAI-compatible 与 Anthropic-compatible 模型接口
 - 应用内配置模型、API key、自定义 skills 和本地 MCP servers
 - 工具调用确认、文件上传、桌面文件拖入识别和附件对话
@@ -79,6 +84,69 @@
 - 默认使用 Apple 语音识别，适合中英混合输入，需要系统语音识别权限。
 - 可在 Agent 设置中下载本地 SenseVoice 模型离线识别；模型约 239.5 MB，只需要麦克风权限。
 - 录音、准备和审核状态都会显示 Liquid Glass 语音 HUD；识别失败、空文本或权限拒绝不会发送空任务。
+
+### 编码会话监控（CodeWatch）
+
+顶栏「编码」页列出本机所有运行中的 Claude Code / ChatGPT.app / Codex 会话：项目名、状态、当前工具、最近提问、模型、活跃时间。可使用按来源切换的 Clawd / Dex，也可从 `~/.codex/pets` 自选 Codex Pet；兼容 8×9 v1 和 8×11 v2 atlas。
+
+两条数据通道汇进同一份会话表：
+
+- **进程发现（零配置）**：扫描进程表找出 claude / codex 进程，也识别 `ChatGPT.app/Contents/Resources/codex` → 取其 cwd 或 rollout 元数据 → 定位对应 transcript（Claude 是 `~/.claude/projects/<编码后的cwd>/<session>.jsonl`，Codex/ChatGPT 是 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`）→ 用 `DispatchSource` 尾随增量。装不装 hooks 都能看到会话
+- **Hook 事件（可选，更实时）**：点「安装 Claude hooks」会往 `~/.claude/settings.json` 写入 10 个非阻塞 hook，hook 脚本用 `nc -U` 把事件发到 `/tmp/xuanyu-codewatch-<uid>.sock`。有了它才能看到「正在执行哪个工具」「等待审批/回答」这类实时状态
+
+当 Claude Code 或 ChatGPT 正在执行时，缩小态直接显示运行来源和所选 Pet；任务从活跃转为完成时，悬屿显示完成提醒并发送 macOS 系统通知。编码页的铃铛和扬声器按钮分别控制系统完成通知与 8-bit 事件音效。
+
+安装器有两条硬约束：**绝不安装 `PermissionRequest` hook**（那是审批拦截，悬屿只旁观不介入），以及 **`settings.json` 解析失败时拒绝写入**（宁可报错也不覆盖你的配置）。写入走最小 diff，你自己的 hooks 和键序原样保留，卸载时只摘掉悬屿这几条。
+
+调试口：`/tmp/xuanyu-codewatch-status-<uid>.json` 是当前会话表的快照，可直接 `cat` 核对监控是否在工作。
+
+本功能的会话状态机、transcript 尾随和像素吉祥物来自 [CodeIsland](https://github.com/wxtsky/CodeIsland)（MIT，Copyright (c) 2026 wxtsky），见 `Sources/CodeWatchCore/LICENSE.CodeIsland`。
+
+### 长期记忆
+
+记忆分成冷热两层，解决的是同一个问题：热记忆整块注入系统提示，所以必须有界，记满了只能删——冷存档把这个天花板拿掉了。
+
+- **热记忆**：`memory/MEMORY.md` 和 `memory/USER.md`，每轮完整注入，有字符上限，放每次都用得上的短事实，由 `memory_manage` 维护
+- **记忆笔记（冷存档）**：`memory/notes/*.md`，一条事实一个文件，条数不限。上下文里常驻的只有「名字 + 类型 + 描述」组成的索引，正文按当前问题的相关性召回
+
+笔记带 frontmatter，类型分 `user` / `feedback` / `project` / `reference`，正文里写 `[[另一条笔记名]]` 即互相关联：
+
+```markdown
+---
+name: pomodoro-length
+description: 番茄钟默认时长是 45 分钟，不是 25
+type: feedback
+createdAt: 2026-07-27
+updatedAt: 2026-07-27
+---
+
+用户要求番茄钟默认 45 分钟。
+
+**Why:** 他的工作块是 45 分钟一段，25 分钟会打断心流。
+**How to apply:** 改默认值时不要回退到 25；新增计时预设也以 45 为中心。
+```
+
+三个工具：`memory_write` 写入或更新一条笔记（`promote_from_memory` 可以顺手把一条写满的热记忆搬进冷存档）、`memory_recall` 按需取正文、`memory_forget` 删除确认错误的笔记。自动召回默认每轮最多带 3 条正文进上下文，走词面匹配（刻意不把单个汉字当匹配依据，否则「多久」会撞上「最多」）；`memory_recall` 则会叠加向量相似度，能召回用词不同但语义相关的笔记。
+
+设置里可以关闭笔记层，或把自动召回条数调成 0，改由 agent 自己决定何时召回。
+
+### Agent 脚手架与多智能体
+
+Agent 循环外面套了一层脚手架（`AgentRuntime/src/harness.ts`），它做四件事：
+
+- **计划账本**：多步任务先用 `update_plan` 立 3-7 步计划，每步的状态变化都会推到岛内显示；同一时刻只允许一个步骤处于进行中
+- **重复调用检测**：同名同参的工具调用重复三次会被判定为原地打转，下一轮注入提示要求换路径
+- **轮次预算**：用掉 70% 工具轮次后开始提醒收敛，用尽后强制给出不带工具的最终答复
+- **收尾自检闸门**：本轮真正改过文件或跑过写命令时，在给最终答复前强制自检一次，每轮只注入一次
+
+多智能体层（`AgentRuntime/src/subagents.ts`）提供两个工具：
+
+- `dispatch_agents`：把彼此独立的子任务分给带角色的子 agent。`parallel` 模式并行跑（默认上限 3 个），`sequential` 模式让后一个 agent 看到前面所有报告
+- `engineer_loop`：执行者改 → 评审者对着真实文件对抗性验收 → 未通过就带着评审意见再来一轮，最多 4 轮
+
+五种角色的工具集是按职责裁剪的：探路者、评审者、汇总者只读；验证者能跑命令但不能改文件；只有执行者拿得到写工具。子 agent 一律不能再派发子 agent（深度锁一层），它们调用的危险工具仍然逐个弹权限确认，且确认框全局排队，不会互相覆盖。
+
+这些能力都能在设置的「任务脚手架与多智能体」里单独开关。
 
 ## 截图
 
@@ -171,9 +239,20 @@ Xuanyu/
 ### Swift 应用
 
 ```bash
+./build.sh                 # 推荐：自动处理下面两个环境问题
 swift build
 swift build -c release
 ```
+
+只装了 Command Line Tools（没有完整 Xcode）时，直接 `swift build` 会遇到两个互相独立的问题，`build.sh` 已经自动绕开，手动构建时需要自己加参数：
+
+```bash
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk \
+    swift build --build-system native
+```
+
+- **`error: Multiple commands produce .../include/module.modulemap`**：SwiftPM 新的 swiftbuild 构建系统会把两个 binaryTarget 各自的 `Headers/module.modulemap` 拷进同一个 `include/` 目录。加 `--build-system native` 回到旧构建系统即可，与 SDK 无关。
+- **`external macro implementation type 'SwiftUIMacros.StateMacro' could not be found`**：Command Line Tools 自带的 macOS 27 SDK 把 `@State` 改成了宏，而展开它需要的宏插件只随完整 Xcode 分发。用同一份 CLT 里自带的 macOS 26.x SDK 构建即可（`Package.swift` 的部署目标本来就是 macOS 26.0）。装了完整 Xcode 的话这条不需要。
 
 ### Agent runtime
 

@@ -6,6 +6,7 @@ enum IslandMode: String, Codable, Equatable {
     case quickApps
     case clipboard
     case agent
+    case code
 }
 
 enum AgentStatus: String, Codable, Equatable {
@@ -118,6 +119,90 @@ struct AgentToolEvent: Identifiable, Codable, Equatable {
         self.isPending = isPending
         self.isApproved = isApproved
         self.createdAt = createdAt
+    }
+}
+
+/// 一条长期记忆笔记。索引常驻上下文，正文按相关性召回。
+struct AgentMemoryNote: Identifiable, Codable, Equatable {
+    var id: String
+    var name: String
+    var noteDescription: String
+    var noteType: String
+    var updatedAt: String
+    var text: String
+    var links: [String]
+
+    var typeLabel: String {
+        switch noteType {
+        case "user": return "用户"
+        case "feedback": return "反馈"
+        case "reference": return "资料"
+        default: return "项目"
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case noteDescription = "description"
+        case noteType
+        case updatedAt
+        case text
+        case links
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        noteDescription = try container.decodeIfPresent(String.self, forKey: .noteDescription) ?? ""
+        noteType = try container.decodeIfPresent(String.self, forKey: .noteType) ?? "project"
+        updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt) ?? ""
+        text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
+        links = try container.decodeIfPresent([String].self, forKey: .links) ?? []
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? "note:\(name)"
+    }
+}
+
+enum AgentPlanStatus: String, Codable {
+    case pending
+    case inProgress = "in_progress"
+    case completed
+
+    var symbol: String {
+        switch self {
+        case .pending: return "circle"
+        case .inProgress: return "arrow.triangle.2.circlepath"
+        case .completed: return "checkmark.circle.fill"
+        }
+    }
+}
+
+/// Harness 维护的任务计划里的一步，由运行时的 update_plan 工具驱动。
+struct AgentPlanStep: Identifiable, Codable, Equatable {
+    let id: Int
+    var step: String
+    var status: AgentPlanStatus
+}
+
+/// 一个子 agent 的运行记录，用于在岛内展示编队进度。
+struct AgentSubAgentRun: Identifiable, Codable, Equatable {
+    let id: String
+    var role: String
+    var label: String
+    var goal: String
+    var isRunning: Bool
+    var succeeded: Bool
+    var turns: Int
+
+    var roleTitle: String {
+        switch role {
+        case "explorer": return "探路"
+        case "implementer": return "执行"
+        case "reviewer": return "评审"
+        case "tester": return "验证"
+        case "synthesizer": return "汇总"
+        default: return role
+        }
     }
 }
 
@@ -372,6 +457,8 @@ struct AgentConfig: Codable, Equatable {
     var contextLimit: Int
     var historyLimit: Int
     var memoryEnabled: Bool
+    var memoryNotesEnabled: Bool
+    var memoryAutoRecallLimit: Int
     var userProfileEnabled: Bool
     var memoryCharLimit: Int
     var userCharLimit: Int
@@ -383,6 +470,12 @@ struct AgentConfig: Codable, Equatable {
     var autoTitleEnabled: Bool
     var evolutionEnabled: Bool
     var lazyModeEnabled: Bool
+    var harnessEnabled: Bool
+    var planningEnabled: Bool
+    var verifyGateEnabled: Bool
+    var multiAgentEnabled: Bool
+    var maxToolTurns: Int
+    var subAgentConcurrency: Int
     var mcpServers: [AgentMCPServerConfig]
     var customSkills: [AgentSkillConfig]
 
@@ -399,6 +492,8 @@ struct AgentConfig: Codable, Equatable {
         contextLimit: Int = 1_000_000,
         historyLimit: Int,
         memoryEnabled: Bool = true,
+        memoryNotesEnabled: Bool = true,
+        memoryAutoRecallLimit: Int = 3,
         userProfileEnabled: Bool = true,
         memoryCharLimit: Int = 2200,
         userCharLimit: Int = 1375,
@@ -410,6 +505,12 @@ struct AgentConfig: Codable, Equatable {
         autoTitleEnabled: Bool = true,
         evolutionEnabled: Bool = true,
         lazyModeEnabled: Bool = false,
+        harnessEnabled: Bool = true,
+        planningEnabled: Bool = true,
+        verifyGateEnabled: Bool = true,
+        multiAgentEnabled: Bool = true,
+        maxToolTurns: Int = 20,
+        subAgentConcurrency: Int = 3,
         mcpServers: [AgentMCPServerConfig],
         customSkills: [AgentSkillConfig] = []
     ) {
@@ -425,6 +526,8 @@ struct AgentConfig: Codable, Equatable {
         self.contextLimit = contextLimit
         self.historyLimit = historyLimit
         self.memoryEnabled = memoryEnabled
+        self.memoryNotesEnabled = memoryNotesEnabled
+        self.memoryAutoRecallLimit = memoryAutoRecallLimit
         self.userProfileEnabled = userProfileEnabled
         self.memoryCharLimit = memoryCharLimit
         self.userCharLimit = userCharLimit
@@ -436,6 +539,12 @@ struct AgentConfig: Codable, Equatable {
         self.autoTitleEnabled = autoTitleEnabled
         self.evolutionEnabled = evolutionEnabled
         self.lazyModeEnabled = lazyModeEnabled
+        self.harnessEnabled = harnessEnabled
+        self.planningEnabled = planningEnabled
+        self.verifyGateEnabled = verifyGateEnabled
+        self.multiAgentEnabled = multiAgentEnabled
+        self.maxToolTurns = maxToolTurns
+        self.subAgentConcurrency = subAgentConcurrency
         self.mcpServers = mcpServers
         self.customSkills = customSkills
     }
@@ -453,6 +562,8 @@ struct AgentConfig: Codable, Equatable {
         case contextLimit
         case historyLimit
         case memoryEnabled
+        case memoryNotesEnabled
+        case memoryAutoRecallLimit
         case userProfileEnabled
         case memoryCharLimit
         case userCharLimit
@@ -464,6 +575,12 @@ struct AgentConfig: Codable, Equatable {
         case autoTitleEnabled
         case evolutionEnabled
         case lazyModeEnabled
+        case harnessEnabled
+        case planningEnabled
+        case verifyGateEnabled
+        case multiAgentEnabled
+        case maxToolTurns
+        case subAgentConcurrency
         case mcpServers
         case customSkills
     }
@@ -482,6 +599,8 @@ struct AgentConfig: Codable, Equatable {
         contextLimit = try container.decodeIfPresent(Int.self, forKey: .contextLimit) ?? 1_000_000
         historyLimit = try container.decodeIfPresent(Int.self, forKey: .historyLimit) ?? 40
         memoryEnabled = try container.decodeIfPresent(Bool.self, forKey: .memoryEnabled) ?? true
+        memoryNotesEnabled = try container.decodeIfPresent(Bool.self, forKey: .memoryNotesEnabled) ?? true
+        memoryAutoRecallLimit = try container.decodeIfPresent(Int.self, forKey: .memoryAutoRecallLimit) ?? 3
         userProfileEnabled = try container.decodeIfPresent(Bool.self, forKey: .userProfileEnabled) ?? true
         memoryCharLimit = try container.decodeIfPresent(Int.self, forKey: .memoryCharLimit) ?? 2200
         userCharLimit = try container.decodeIfPresent(Int.self, forKey: .userCharLimit) ?? 1375
@@ -493,6 +612,12 @@ struct AgentConfig: Codable, Equatable {
         autoTitleEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoTitleEnabled) ?? true
         evolutionEnabled = try container.decodeIfPresent(Bool.self, forKey: .evolutionEnabled) ?? true
         lazyModeEnabled = try container.decodeIfPresent(Bool.self, forKey: .lazyModeEnabled) ?? false
+        harnessEnabled = try container.decodeIfPresent(Bool.self, forKey: .harnessEnabled) ?? true
+        planningEnabled = try container.decodeIfPresent(Bool.self, forKey: .planningEnabled) ?? true
+        verifyGateEnabled = try container.decodeIfPresent(Bool.self, forKey: .verifyGateEnabled) ?? true
+        multiAgentEnabled = try container.decodeIfPresent(Bool.self, forKey: .multiAgentEnabled) ?? true
+        maxToolTurns = try container.decodeIfPresent(Int.self, forKey: .maxToolTurns) ?? 20
+        subAgentConcurrency = try container.decodeIfPresent(Int.self, forKey: .subAgentConcurrency) ?? 3
         mcpServers = try container.decodeIfPresent([AgentMCPServerConfig].self, forKey: .mcpServers) ?? []
         customSkills = try container.decodeIfPresent([AgentSkillConfig].self, forKey: .customSkills) ?? []
     }
@@ -510,6 +635,8 @@ struct AgentConfig: Codable, Equatable {
         contextLimit: 1_000_000,
         historyLimit: 40,
         memoryEnabled: true,
+        memoryNotesEnabled: true,
+        memoryAutoRecallLimit: 3,
         userProfileEnabled: true,
         memoryCharLimit: 2200,
         userCharLimit: 1375,
@@ -521,6 +648,12 @@ struct AgentConfig: Codable, Equatable {
         autoTitleEnabled: true,
         evolutionEnabled: true,
         lazyModeEnabled: false,
+        harnessEnabled: true,
+        planningEnabled: true,
+        verifyGateEnabled: true,
+        multiAgentEnabled: true,
+        maxToolTurns: 20,
+        subAgentConcurrency: 3,
         mcpServers: [],
         customSkills: []
     )

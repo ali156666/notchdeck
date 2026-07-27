@@ -164,6 +164,8 @@ final class PanelWindowController: NSObject {
                 return NSSize(width: min(800, screen.frame.width - 40), height: 304)
             case .agent:
                 return NSSize(width: min(960, screen.frame.width - 24), height: min(588, screen.frame.height - 32))
+            case .code:
+                return NSSize(width: min(800, screen.frame.width - 40), height: 438)
             }
         }
 

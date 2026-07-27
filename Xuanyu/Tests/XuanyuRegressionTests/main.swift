@@ -80,7 +80,6 @@ private func unwrap<T>(
     return value
 }
 
-@main
 @MainActor
 struct XuanyuRegressionTestRunner {
     @MainActor
@@ -101,6 +100,19 @@ struct XuanyuRegressionTestRunner {
             ("Lyrics query variants strip common version noise", testQueryVariantsStripCommonVersionNoise),
             ("Voice arming progress is visible and cancelable", testArmingProgressIsVisibleAndCancelable),
             ("Voice missing input monitoring shows persistent permission state", testMissingInputMonitoringShowsPersistentPermissionState),
+            ("CodeWatch encodes claude project dirs", testCodeWatchProjectDirEncoding),
+            ("CodeWatch matches claude/codex executables", testCodeWatchExecutableMatching),
+            ("CodeWatch extracts codex session ids", testCodeWatchCodexSessionIdExtraction),
+            ("CodeWatch reads codex session metadata", testCodeWatchCodexSessionMetadata),
+            ("CodeWatch accepts v1 and v2 Codex pets", testCodeWatchPetVersionCompatibility),
+            ("CodeWatch installer preserves foreign hooks", testCodeWatchInstallerPreservesForeignHooks),
+            ("CodeWatch installer refuses broken settings", testCodeWatchInstallerRefusesBrokenSettings),
+            ("CodeWatch service reduces hook events", testCodeWatchServiceReducesHookEvents),
+            ("CodeWatch labels ChatGPT completion", testCodeWatchChatGPTCompletion),
+            ("CodeWatch detects mid-turn Codex activity", testCodeWatchCodexMidTurnAttach),
+            ("CodeWatch SessionStart keeps transcript path", testCodeWatchSessionStartKeepsTranscriptPath),
+            ("CodeWatch tailer delivers appended lines", testCodeWatchTailerDeliversAppendedLines),
+            ("CodeWatch socket server round trip", testCodeWatchSocketServerRoundTrip),
         ]
 
         var failures: [(String, Error)] = []
@@ -439,10 +451,14 @@ struct XuanyuRegressionTestRunner {
 }
 
 #else
-@main
 struct XuanyuRegressionTestRunner {
     static func main() {
         print("XuanyuRegressionTests is debug-only. Run `swift run XuanyuRegressionTests` without `-c release`.")
     }
 }
 #endif
+
+// main.swift 与多源文件并存时不允许 @main，改用 top-level 入口调用。
+MainActor.assumeIsolated {
+    XuanyuRegressionTestRunner.main()
+}

@@ -57,7 +57,8 @@ function startRuntimeChild() {
     send(event) {
       child.stdin.write(`${JSON.stringify(event)}\n`);
     },
-    async waitFor(predicate, timeoutMs = 2500) {
+    // 三个测试文件并行跑时机器负载会上来，等待窗口留宽些，避免把慢当成错。
+    async waitFor(predicate, timeoutMs = 8000) {
       const started = Date.now();
       while (Date.now() - started < timeoutMs) {
         const matched = events.find(predicate);
@@ -948,7 +949,8 @@ test("auto-approved tool calls run in parallel and keep model result order", asy
   });
   await runtimeChild.waitFor((event) => event.type === "ready" && event.memoryUsage);
   runtimeChild.send({ type: "user_message", text: "并行跑两个只读 shell。" });
-  await runtimeChild.waitFor((event) => event.type === "assistant_done", 3000);
+  // 并行性由下面的事件先后断言证明，这里只是等待上限，不做时延判定。
+  await runtimeChild.waitFor((event) => event.type === "assistant_done");
 
   runtimeChild.child.stdin.end();
   await new Promise((resolve) => runtimeChild.child.on("close", resolve));
