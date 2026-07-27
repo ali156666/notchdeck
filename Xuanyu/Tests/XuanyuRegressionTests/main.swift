@@ -84,7 +84,24 @@ private func unwrap<T>(
 struct XuanyuRegressionTestRunner {
     @MainActor
     static func main() {
+        let sandboxURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xuanyu-regression-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: sandboxURL, withIntermediateDirectories: true)
+        } catch {
+            print("Unable to create regression sandbox: \(error)")
+            Darwin.exit(1)
+        }
+        Darwin.setenv("XUANYU_APP_SUPPORT_ROOT", sandboxURL.path, 1)
+        defer {
+            Darwin.unsetenv("XUANYU_APP_SUPPORT_ROOT")
+            try? FileManager.default.removeItem(at: sandboxURL)
+        }
+
         let tests: [(String, @MainActor () throws -> Void)] = [
+            ("Regression tests use an isolated app support directory", testRegressionAppSupportIsIsolated),
+            ("Agent store removes leaked regression fixtures", testAgentStoreRemovesLeakedRegressionFixtures),
+            ("Agent store preserves meaningful leaked-session content", testAgentStorePreservesMeaningfulLeakedSessionContent),
             ("AgentService routes streaming deltas by runtime message id", testRuntimeMessageIdsRouteDeltasAndFinishSegments),
             ("AgentService keeps old-session runtime events out of active conversation", testRuntimeEventsWithOldSessionIdDoNotAppendToActiveConversation),
             ("Command hold short press never triggers hold", testShortCommandPressNeverTriggersHold),
@@ -134,6 +151,61 @@ struct XuanyuRegressionTestRunner {
             print("\(failures.count) Xuanyu regression test(s) failed")
             Darwin.exit(1)
         }
+    }
+
+    private static func testRegressionAppSupportIsIsolated() throws {
+        let overridePath = try unwrap(ProcessInfo.processInfo.environment["XUANYU_APP_SUPPORT_ROOT"])
+        try expectEqual(AppSupportDirectory.root.standardizedFileURL.path, URL(fileURLWithPath: overridePath).standardizedFileURL.path)
+        try expectFalse(AppSupportDirectory.root.path.contains("/Library/Application Support/Xuanyu"))
+    }
+
+    private static func testAgentStoreRemovesLeakedRegressionFixtures() throws {
+        let realConversation = AgentConversation(id: "real-conversation", title: "真实对话")
+        let leakedActiveConversation = AgentConversation(
+            id: "conversation-b",
+            title: "你好",
+            messages: [
+                AgentMessage(role: .user, text: "你好"),
+                AgentMessage(role: .user, text: "你好"),
+            ]
+        )
+        let leakedOldConversation = AgentConversation(
+            id: "conversation-a",
+            title: "A",
+            messages: [AgentMessage(role: .assistant, text: "旧会话结果")]
+        )
+        let store = AgentConversationStore(
+            activeConversationId: leakedActiveConversation.id,
+            conversations: [leakedActiveConversation, leakedOldConversation, realConversation]
+        )
+
+        let repaired = try unwrap(AgentConfigStore.repairingLeakedRegressionFixtures(in: store))
+        try expectEqual(repaired.conversations.map(\.id), [realConversation.id])
+        try expectEqual(repaired.activeConversationId, realConversation.id)
+    }
+
+    private static func testAgentStorePreservesMeaningfulLeakedSessionContent() throws {
+        let meaningfulMessage = AgentMessage(role: .assistant, text: "这是真实回答")
+        let leakedActiveConversation = AgentConversation(
+            id: "conversation-b",
+            title: "真实问题",
+            messages: [meaningfulMessage]
+        )
+        let leakedOldConversation = AgentConversation(
+            id: "conversation-a",
+            title: "A",
+            messages: [AgentMessage(role: .assistant, text: "旧会话结果")]
+        )
+        let store = AgentConversationStore(
+            activeConversationId: leakedActiveConversation.id,
+            conversations: [leakedActiveConversation, leakedOldConversation]
+        )
+
+        let repaired = try unwrap(AgentConfigStore.repairingLeakedRegressionFixtures(in: store))
+        try expectEqual(repaired.conversations.count, 1)
+        try expectFalse(repaired.conversations[0].id == leakedActiveConversation.id)
+        try expectEqual(repaired.conversations[0].messages, [meaningfulMessage])
+        try expectEqual(repaired.activeConversationId, repaired.conversations[0].id)
     }
 
     private static func testRuntimeMessageIdsRouteDeltasAndFinishSegments() throws {

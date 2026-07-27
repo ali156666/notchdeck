@@ -17,6 +17,10 @@ enum AgentConfigStore {
         configDirectory.appendingPathComponent("ui-conversations.json")
     }
 
+    static var leakedRegressionBackupURL: URL {
+        configDirectory.appendingPathComponent("ui-conversations.pre-regression-fix.json")
+    }
+
     static func loadConfig() -> AgentConfig {
         guard let data = try? Data(contentsOf: configURL),
               let config = try? JSONDecoder().decode(AgentConfig.self, from: data)
@@ -63,7 +67,13 @@ enum AgentConfigStore {
            let store = try? JSONDecoder().decode(AgentConversationStore.self, from: data),
            !store.conversations.isEmpty
         {
-            return sanitized(store)
+            let cleanStore = sanitized(store)
+            if let repairedStore = repairingLeakedRegressionFixtures(in: cleanStore) {
+                backupLeakedRegressionStore(data)
+                saveConversationStore(repairedStore)
+                return repairedStore
+            }
+            return cleanStore
         }
 
         let migratedMessages = loadMessages()
@@ -84,6 +94,97 @@ enum AgentConfigStore {
             try encoder.encode(sanitized(store)).write(to: conversationStoreURL, options: .atomic)
         } catch {
             NSLog("悬屿 conversation save failed: \(error)")
+        }
+    }
+
+    static func repairingLeakedRegressionFixtures(in store: AgentConversationStore) -> AgentConversationStore? {
+        guard store.conversations.contains(where: isLeakedOldSessionFixture) else {
+            return nil
+        }
+
+        var replacementIdByFixtureId: [String: String] = [:]
+        var conversations: [AgentConversation] = []
+
+        for conversation in store.conversations {
+            if isLeakedOldSessionFixture(conversation) {
+                continue
+            }
+            if conversation.id == "conversation-b" {
+                guard !isDiscardableLeakedActiveSession(conversation) else {
+                    continue
+                }
+                let replacementId = UUID().uuidString
+                replacementIdByFixtureId[conversation.id] = replacementId
+                conversations.append(
+                    AgentConversation(
+                        id: replacementId,
+                        title: conversation.title,
+                        createdAt: conversation.createdAt,
+                        updatedAt: conversation.updatedAt,
+                        isPinned: conversation.isPinned,
+                        isArchived: conversation.isArchived,
+                        contextSummary: conversation.contextSummary,
+                        messages: conversation.messages,
+                        toolEvents: conversation.toolEvents
+                    )
+                )
+                continue
+            }
+            conversations.append(conversation)
+        }
+
+        if conversations.isEmpty {
+            conversations = [AgentConversation()]
+        }
+        let repairedActiveId = replacementIdByFixtureId[store.activeConversationId]
+            ?? (conversations.contains { $0.id == store.activeConversationId } ? store.activeConversationId : conversations[0].id)
+        return sanitized(AgentConversationStore(activeConversationId: repairedActiveId, conversations: conversations))
+    }
+
+    private static func isLeakedOldSessionFixture(_ conversation: AgentConversation) -> Bool {
+        guard conversation.id == "conversation-a",
+              conversation.title == "A",
+              !conversation.isPinned,
+              !conversation.isArchived,
+              conversation.contextSummary.isEmpty,
+              conversation.toolEvents.isEmpty,
+              conversation.messages.count == 1,
+              let message = conversation.messages.first
+        else {
+            return false
+        }
+        return message.role == .assistant
+            && message.text == "旧会话结果"
+            && !message.isStreaming
+            && message.attachments.isEmpty
+    }
+
+    private static func isDiscardableLeakedActiveSession(_ conversation: AgentConversation) -> Bool {
+        guard conversation.id == "conversation-b",
+              !conversation.isPinned,
+              !conversation.isArchived,
+              conversation.contextSummary.isEmpty,
+              conversation.toolEvents.isEmpty
+        else {
+            return false
+        }
+        return conversation.messages.allSatisfy { message in
+            message.role == .user
+                && message.text.trimmingCharacters(in: .whitespacesAndNewlines) == "你好"
+                && !message.isStreaming
+                && message.attachments.isEmpty
+        }
+    }
+
+    private static func backupLeakedRegressionStore(_ data: Data) {
+        guard !FileManager.default.fileExists(atPath: leakedRegressionBackupURL.path) else {
+            return
+        }
+        do {
+            try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+            try data.write(to: leakedRegressionBackupURL, options: .atomic)
+        } catch {
+            NSLog("悬屿 leaked regression conversation backup failed: \(error)")
         }
     }
 
