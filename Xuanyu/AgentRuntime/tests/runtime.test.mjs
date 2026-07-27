@@ -23,6 +23,7 @@ import {
   normalizeAnthropicURL,
   normalizeBaseURL,
   normalizeConfiguredSkills,
+  openAITextContent,
   parseApplyPatch,
   parseRuntimeLine,
   requestWithRetry,
@@ -202,6 +203,15 @@ test("auto-completes provider root URLs by protocol", () => {
   assert.equal(normalizeAnthropicURL("https://api.anthropic.com"), "https://api.anthropic.com/v1/messages");
   assert.equal(normalizeAnthropicURL("https://api.anthropic.com/v1"), "https://api.anthropic.com/v1/messages");
   assert.equal(normalizeAnthropicURL("https://api.deepseek.com/anthropic/v1/messages"), "https://api.deepseek.com/anthropic/v1/messages");
+});
+
+test("reads string and multipart OpenAI text content", () => {
+  assert.equal(openAITextContent("直接文本"), "直接文本");
+  assert.equal(openAITextContent([
+    { type: "text", text: "分段" },
+    { type: "output_text", text: { value: "文本" } },
+  ]), "分段文本");
+  assert.equal(openAITextContent(null), "");
 });
 
 test("configure initializes persistent memory and evolution stores", async () => {
@@ -588,6 +598,74 @@ test("openai protocol emits assistant deltas before the SSE stream closes", asyn
   assert.equal(runtimeChild.events.some((event) => event.type === "assistant_done"), false);
   finishStream();
   await runtimeChild.waitFor((event) => event.type === "assistant_done");
+});
+
+test("openai protocol falls back to reasoning_content when content is absent", async (context) => {
+  const configDir = await mkdtemp(join(tmpdir(), "xuanyu-agent-openai-reasoning-"));
+  const server = createServer((request, response) => {
+    request.resume();
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end([
+      `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "兼容回答。" } }] })}`,
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n"));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const runtimeChild = startRuntimeChild();
+  context.after(() => {
+    runtimeChild.child.kill();
+    if (server.listening) server.close();
+  });
+
+  runtimeChild.send({
+    type: "configure",
+    apiKey: "test-key",
+    configDir,
+    config: { baseURL: `http://127.0.0.1:${address.port}/v1`, model: "fake-reasoning-model" },
+  });
+  await runtimeChild.waitFor((event) => event.type === "ready" && event.memoryUsage);
+  runtimeChild.send({ type: "user_message", text: "测试 reasoning_content。" });
+  await runtimeChild.waitFor((event) => event.type === "assistant_delta" && event.delta === "兼容回答。");
+  await runtimeChild.waitFor((event) => event.type === "assistant_done");
+
+  const sessions = await readFile(join(configDir, "sessions.jsonl"), "utf8");
+  assert.match(sessions, /"content":"兼容回答。"/);
+});
+
+test("openai protocol renders and persists an explicit empty-response message", async (context) => {
+  const configDir = await mkdtemp(join(tmpdir(), "xuanyu-agent-openai-empty-"));
+  const server = createServer((request, response) => {
+    request.resume();
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(["data: [DONE]", ""].join("\n"));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const runtimeChild = startRuntimeChild();
+  context.after(() => {
+    runtimeChild.child.kill();
+    if (server.listening) server.close();
+  });
+
+  runtimeChild.send({
+    type: "configure",
+    apiKey: "test-key",
+    configDir,
+    config: { baseURL: `http://127.0.0.1:${address.port}/v1`, model: "fake-empty-model" },
+  });
+  await runtimeChild.waitFor((event) => event.type === "ready" && event.memoryUsage);
+  runtimeChild.send({ type: "user_message", text: "测试空响应。" });
+  const delta = await runtimeChild.waitFor((event) =>
+    event.type === "assistant_delta" && /模型返回了空响应/.test(event.delta || ""),
+  );
+  assert.match(delta.delta, /OpenAI 兼容流格式/);
+  await runtimeChild.waitFor((event) => event.type === "assistant_done");
+
+  const sessions = await readFile(join(configDir, "sessions.jsonl"), "utf8");
+  assert.match(sessions, /模型返回了空响应/);
 });
 
 test("late events from an old session do not pollute the reset session history", async (context) => {

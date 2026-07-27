@@ -187,6 +187,18 @@ function normalizeAssistantText(text) {
     .trim();
 }
 
+export function openAITextContent(value) {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value.map((part) => {
+    if (typeof part === "string") return part;
+    if (typeof part?.text === "string") return part.text;
+    if (typeof part?.text?.value === "string") return part.text.value;
+    if (typeof part?.content === "string") return part.content;
+    return "";
+  }).join("");
+}
+
 function parseJSON(value, fallback = null) {
   try {
     return JSON.parse(value);
@@ -2965,6 +2977,7 @@ async function streamOpenAIChatInner(messages, tools, options, abort) {
   const decoder = new TextDecoder();
   let buffer = "";
   let text = "";
+  let reasoningText = "";
   let toolCalls = [];
   while (true) {
     const { done, value } = await reader.read();
@@ -2979,17 +2992,27 @@ async function streamOpenAIChatInner(messages, tools, options, abort) {
         if (!data || data === "[DONE]") continue;
         const event = parseJSON(data);
         const delta = event?.choices?.[0]?.delta || {};
-        if (delta.content) {
-          text += delta.content;
-          deltaEmitter.push(delta.content);
+        const contentDelta = openAITextContent(delta.content);
+        if (contentDelta) {
+          text += contentDelta;
+          deltaEmitter.push(contentDelta);
+        }
+        const reasoningDelta = openAITextContent(delta.reasoning_content ?? delta.reasoningContent);
+        if (reasoningDelta) {
+          reasoningText += reasoningDelta;
         }
         accumulateToolCall(toolCalls, delta.tool_calls);
       }
     }
   }
-  deltaEmitter.flush();
   const filteredToolCalls = toolCalls.filter((call) => call.function?.name);
-  const normalizedText = normalizeAssistantText(text);
+  const normalizedText = normalizeAssistantText(
+    text || (filteredToolCalls.length === 0 ? reasoningText : ""),
+  );
+  if (!text && normalizedText) {
+    deltaEmitter.push(normalizedText);
+  }
+  deltaEmitter.flush();
   return { text: normalizedText, toolCalls: filteredToolCalls };
 }
 
@@ -3362,17 +3385,22 @@ async function runAgent(userText, attachments = [], sessionId = runtime.sessionI
         emitHarnessStatus(runSessionId);
         continue;
       }
+      const assistantText = result.text
+        || "模型返回了空响应。请重试；如果持续发生，请检查当前模型的 OpenAI 兼容流格式。";
+      if (!result.text) {
+        send({ type: "assistant_delta", sessionId: runSessionId, messageId, delta: assistantText });
+      }
       if (isCurrentSession(runSessionId)) {
-        runtime.messages.push({ role: "assistant", content: result.text });
+        runtime.messages.push({ role: "assistant", content: assistantText });
         await saveHistory();
       }
-      await appendSessionMessage({ role: "assistant", content: result.text }, runSessionId);
+      await appendSessionMessage({ role: "assistant", content: assistantText }, runSessionId);
       if (runtime.config.autoTitleEnabled !== false && isCurrentSession(runSessionId)) {
         const firstUser = runtime.messages.find((message) => message.role === "user")?.content || userText;
-        send({ type: "conversation_title", sessionId: runSessionId, title: generateConversationTitle(firstUser, result.text) });
+        send({ type: "conversation_title", sessionId: runSessionId, title: generateConversationTitle(firstUser, assistantText) });
       }
       if (isCurrentSession(runSessionId)) {
-        await autoExtractMemoryAfterTurn(messageText, result.text);
+        await autoExtractMemoryAfterTurn(messageText, assistantText);
       }
       send({ type: "assistant_done", sessionId: runSessionId, messageId });
       return;
