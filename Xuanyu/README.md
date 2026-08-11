@@ -6,13 +6,15 @@
 
 <p align="center">
   <a href="https://github.com/ali156666/notchdeck/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/ali156666/notchdeck?display_name=tag&sort=semver"></a>
-  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green"></a>
+  <a href="../LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="macOS" src="https://img.shields.io/badge/macOS-26%2B-black">
   <img alt="Swift" src="https://img.shields.io/badge/Swift-5.9-orange">
   <img alt="Node" src="https://img.shields.io/badge/Node.js-18%2B-339933">
 </p>
 
 <p align="center">
+  <a href="#下载安装">下载安装</a>
+  ·
   <a href="#快速开始">快速开始</a>
   ·
   <a href="#功能">功能</a>
@@ -22,6 +24,12 @@
   <a href="#交流与赞赏">交流与赞赏</a>
   ·
   <a href="#贡献">贡献</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/ali156666/notchdeck/releases/download/v1.0.27/NotchDeck-1.0.27.dmg"><strong>下载悬屿 v1.0.27</strong></a>
+  ·
+  <a href="https://github.com/ali156666/notchdeck/releases/latest">查看最新版本</a>
 </p>
 
 <p align="center">
@@ -163,6 +171,15 @@ Agent 循环外面套了一层脚手架（`AgentRuntime/src/harness.ts`），它
 | --- |
 | <img src="./docs/images/agent-skills.png" alt="Agent skills 设置" width="420"> |
 
+## 下载安装
+
+1. 下载 [NotchDeck-1.0.27.dmg](https://github.com/ali156666/notchdeck/releases/download/v1.0.27/NotchDeck-1.0.27.dmg)。
+2. 打开 DMG，把「悬屿.app」拖入「Applications」。
+3. 首次启动时，在「应用程序」中按住 Control 点击「悬屿.app」，选择「打开」。
+4. 悬屿是顶栏常驻应用，不会出现在 Dock；启动后在屏幕顶部中央展开它。
+
+SHA-256 校验值和完整更新内容见 [v1.0.27 Release](https://github.com/ali156666/notchdeck/releases/tag/v1.0.27) 与仓库根目录的 [CHANGELOG.md](../CHANGELOG.md)。
+
 ## 快速开始
 
 ### 环境要求
@@ -181,7 +198,7 @@ cd notchdeck/Xuanyu
 
 `build.sh` 会完成三件事：
 
-- 构建 `AgentRuntime/dist/runtime.mjs`
+- 构建 `AgentRuntime/dist/*.mjs`（runtime、memory、harness、subagents）
 - 编译 Swift 应用
 - 生成并启动 `dist/悬屿.app`
 
