@@ -28,3 +28,10 @@
 
 - Swift 回归测试扩展至 33 项，覆盖 ChatGPT 来源识别、Codex Pet、完成事件、会话尾随、Agent 消息隔离、历史恢复与测试数据沙箱。
 - Agent Runtime 的 83 项测试覆盖记忆、任务脚手架、多智能体角色权限、并发审批、工程师循环与兼容流空响应。
+
+### 发布与安装
+
+- README 新增 v1.0.27 下载入口、安装步骤，以及 CodeWatch、Codex Pet、长期记忆、多智能体和历史恢复说明。
+- DMG 统一使用 `NotchDeck-<version>.dmg` 命名，并在构建后生成 SHA-256 校验文件。
+- 修复 DMG 漏装 `memory.mjs`、`harness.mjs` 与 `subagents.mjs` 的问题；打包阶段会检查四个 Agent Runtime 模块并验证应用签名和 DMG 完整性。
+- 打包脚本同步本地构建的 SwiftPM native build system 与 macOS 26 SDK 回退，支持仅安装 Command Line Tools 的环境。
