@@ -7,7 +7,7 @@ API 推荐：https://shop.xuedingtoken.com/?dist=KDLDYHBS
 
 一、安装
 
-1. 打开「NotchDeck-1.0.27.dmg」。
+1. 打开「NotchDeck-1.0.28.dmg」。
 2. 将「悬屿.app」拖到「Applications」文件夹。
 3. 从「应用程序」里启动「悬屿」。
 
@@ -23,10 +23,17 @@ API 推荐：https://shop.xuedingtoken.com/?dist=KDLDYHBS
 5. 长按左或右 Command 0.5 秒开始语音输入，保持按住说话，松开后先审核识别内容，确认后发送给 Agent。
 6. 语音设置可选择 Apple 识别，或下载本地 SenseVoice 模型离线识别。
 7. 短按 Command、⌘C、⌘V、⌘Tab 等组合键不会触发录音。
+8. Agent 默认启用「工作区可写」沙箱，工作区为 ~/XuanyuWorkspace；可在 Agent 设置 -> 沙箱中修改。
 
 配置文件保存在：
 
 ~/Library/Application Support/Xuanyu/agent/config.json
+
+Agent 默认工作区：
+
+~/XuanyuWorkspace
+
+沙箱默认允许读取本机文件，只允许写入工作区和临时目录，并禁止子进程联网；.git、.agents、.codex 始终受保护。需要下载依赖时，可在沙箱设置中单独开启联网。
 
 
 三、需要授权的系统权限

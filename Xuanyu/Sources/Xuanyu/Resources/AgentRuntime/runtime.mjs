@@ -2,8 +2,9 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { appendFile, mkdir, readFile, readdir, realpath, stat, unlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
@@ -73,6 +74,9 @@ const DEFAULT_CONFIG = {
   evolutionEnabled: true,
   lazyModeEnabled: false,
   approvalPolicy: "on-request",
+  sandboxMode: "workspace-write",
+  sandboxWorkspacePath: "~/XuanyuWorkspace",
+  sandboxNetworkEnabled: false,
   harnessEnabled: true,
   planningEnabled: true,
   verifyGateEnabled: true,
@@ -89,6 +93,7 @@ const runtime = {
   config: { ...DEFAULT_CONFIG },
   apiKey: "",
   configDir: "",
+  sandboxWorkspaceRoot: "",
   skillsRoot: "",
   managedSkillsRoot: "",
   historyPath: "",
@@ -128,6 +133,180 @@ const COMPACT_KEEP_RECENT_MESSAGES = 12;
 const STREAM_DELTA_FLUSH_MS = 40;
 const STREAM_DELTA_FLUSH_CHARS = 240;
 const FILE_SEARCH_CACHE_TTL_MS = 15_000;
+const MACOS_SANDBOX_EXECUTABLE = "/usr/bin/sandbox-exec";
+const SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
+const PROTECTED_WORKSPACE_METADATA = new Set([".git", ".agents", ".codex"]);
+
+// Codex uses a deny-by-default Seatbelt child-process sandbox on macOS. This
+// profile keeps the same security shape while staying small enough for the
+// standalone Xuanyu runtime: commands may read the host, but writes are scoped
+// to the configured workspace and the per-user temporary directory.
+const SEATBELT_BASE_POLICY = `(version 1)
+(deny default)
+(allow process-exec)
+(allow process-fork)
+(allow signal (target same-sandbox))
+(allow process-info* (target same-sandbox))
+(allow file-read*)
+(allow file-write-data (require-all (literal "/dev/null") (vnode-type CHARACTER-DEVICE)))
+(allow sysctl-read)
+(allow sysctl-write (sysctl-name "kern.grade_cputype"))
+(allow iokit-open (iokit-registry-entry-class "RootDomainUserClient"))
+(allow mach-lookup
+  (global-name "com.apple.system.opendirectoryd.libinfo")
+  (global-name "com.apple.PowerManagement.control")
+  (global-name "com.apple.cfprefsd.daemon")
+  (global-name "com.apple.cfprefsd.agent")
+  (local-name "com.apple.cfprefsd.agent"))
+(allow ipc-posix-sem)
+(allow ipc-posix-shm-read*)
+(allow user-preference-read)
+(allow pseudo-tty)
+(allow file-read* file-write* file-ioctl (literal "/dev/ptmx"))
+(allow file-read* file-write*
+  (require-all
+    (regex #"^/dev/ttys[0-9]+")
+    (extension "com.apple.sandbox.pty")))
+(allow file-ioctl (regex #"^/dev/ttys[0-9]+"))`;
+
+const SEATBELT_NETWORK_POLICY = `(allow network-outbound)
+(allow network-inbound)
+(allow system-socket
+  (require-all (socket-domain AF_SYSTEM) (socket-protocol 2)))
+(allow mach-lookup
+  (global-name "com.apple.bsd.dirhelper")
+  (global-name "com.apple.system.opendirectoryd.membership")
+  (global-name "com.apple.SecurityServer")
+  (global-name "com.apple.networkd")
+  (global-name "com.apple.ocspd")
+  (global-name "com.apple.trustd.agent")
+  (global-name "com.apple.SystemConfiguration.DNSConfiguration")
+  (global-name "com.apple.SystemConfiguration.configd"))`;
+
+export function normalizeSandboxMode(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  return SANDBOX_MODES.has(mode) ? mode : "workspace-write";
+}
+
+export function expandUserPath(value, home = homedir()) {
+  const text = String(value || "").trim();
+  if (!text || text === "~") return resolve(home, "XuanyuWorkspace");
+  if (text.startsWith(`~${sep}`)) return resolve(home, text.slice(2));
+  return resolve(text);
+}
+
+export function isPathInside(root, candidate) {
+  const rel = relative(resolve(root), resolve(candidate));
+  return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
+}
+
+export function sandboxMutationDecision(targetPath, options = {}) {
+  const mode = normalizeSandboxMode(options.mode);
+  const workspaceRoot = resolve(String(options.workspaceRoot || runtime.sandboxWorkspaceRoot || runtime.configDir || process.cwd()));
+  const target = resolve(String(targetPath || ""));
+  if (mode === "danger-full-access") return { allowed: true, mode, workspaceRoot, target };
+  if (mode === "read-only") {
+    return { allowed: false, mode, workspaceRoot, target, reason: "sandbox is read-only" };
+  }
+  if (!isPathInside(workspaceRoot, target)) {
+    return { allowed: false, mode, workspaceRoot, target, reason: `path is outside workspace: ${workspaceRoot}` };
+  }
+  const rel = relative(workspaceRoot, target);
+  const components = rel.split(sep).filter(Boolean);
+  const protectedName = components.find((component) => PROTECTED_WORKSPACE_METADATA.has(component));
+  if (protectedName) {
+    return { allowed: false, mode, workspaceRoot, target, reason: `${protectedName} is protected metadata` };
+  }
+  return { allowed: true, mode, workspaceRoot, target };
+}
+
+async function nearestExistingPath(value) {
+  let current = resolve(value);
+  while (!existsSync(current)) {
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return current;
+}
+
+async function assertSandboxMutationAllowed(targetPath) {
+  const decision = sandboxMutationDecision(targetPath, {
+    mode: runtime.config.sandboxMode,
+    workspaceRoot: runtime.sandboxWorkspaceRoot,
+  });
+  if (!decision.allowed) throw new Error(`Sandbox denied write to ${decision.target}: ${decision.reason}`);
+  if (decision.mode === "danger-full-access") return decision;
+
+  const existing = await nearestExistingPath(decision.target);
+  const [resolvedExisting, resolvedRoot] = await Promise.all([
+    realpath(existing),
+    realpath(decision.workspaceRoot),
+  ]);
+  if (!isPathInside(resolvedRoot, resolvedExisting)) {
+    throw new Error(`Sandbox denied symlink escape through ${existing}`);
+  }
+  return decision;
+}
+
+export function buildSeatbeltProfile(options = {}) {
+  const mode = normalizeSandboxMode(options.mode);
+  const sections = [SEATBELT_BASE_POLICY];
+  if (mode === "workspace-write") {
+    sections.push(`(allow file-write*
+  (require-all
+    (subpath (param "WORKSPACE_ROOT"))
+    (require-not (literal (param "WORKSPACE_GIT")))
+    (require-not (subpath (param "WORKSPACE_GIT")))
+    (require-not (literal (param "WORKSPACE_AGENTS")))
+    (require-not (subpath (param "WORKSPACE_AGENTS")))
+    (require-not (literal (param "WORKSPACE_CODEX")))
+    (require-not (subpath (param "WORKSPACE_CODEX")))))`);
+    sections.push(`(allow file-write* (subpath (param "TEMP_ROOT")))`);
+    sections.push(`(deny file-write*
+  (literal (param "WORKSPACE_GIT"))
+  (subpath (param "WORKSPACE_GIT"))
+  (literal (param "WORKSPACE_AGENTS"))
+  (subpath (param "WORKSPACE_AGENTS"))
+  (literal (param "WORKSPACE_CODEX"))
+  (subpath (param "WORKSPACE_CODEX")))`);
+    sections.push(`(deny file-write-unlink
+  (require-all (literal (param "WORKSPACE_ROOT")) (vnode-type DIRECTORY)))`);
+  }
+  if (options.networkEnabled === true) sections.push(SEATBELT_NETWORK_POLICY);
+  return sections.join("\n");
+}
+
+export function sandboxLaunchSpec(file, argv = [], options = {}) {
+  const mode = normalizeSandboxMode(options.mode ?? runtime.config.sandboxMode);
+  if (process.platform !== "darwin" || mode === "danger-full-access") {
+    return { file, argv, env: { ...(options.env || process.env) }, sandboxed: false, mode };
+  }
+  const workspaceRoot = resolve(String(options.workspaceRoot || runtime.sandboxWorkspaceRoot || runtime.configDir || process.cwd()));
+  const tempRoot = resolve(String(options.tempRoot || tmpdir()));
+  const networkEnabled = options.networkEnabled ?? runtime.config.sandboxNetworkEnabled === true;
+  const env = {
+    ...(options.env || process.env),
+    CODEX_SANDBOX: "seatbelt",
+  };
+  if (!networkEnabled) env.CODEX_SANDBOX_NETWORK_DISABLED = "1";
+  else delete env.CODEX_SANDBOX_NETWORK_DISABLED;
+  return {
+    file: MACOS_SANDBOX_EXECUTABLE,
+    argv: [
+      "-p", buildSeatbeltProfile({ mode, networkEnabled }),
+      `-DWORKSPACE_ROOT=${workspaceRoot}`,
+      `-DWORKSPACE_GIT=${join(workspaceRoot, ".git")}`,
+      `-DWORKSPACE_AGENTS=${join(workspaceRoot, ".agents")}`,
+      `-DWORKSPACE_CODEX=${join(workspaceRoot, ".codex")}`,
+      `-DTEMP_ROOT=${tempRoot}`,
+      "--", file, ...argv,
+    ],
+    env,
+    sandboxed: true,
+    mode,
+  };
+}
 const TEXT_EXTENSIONS = new Set([
   ".c", ".cc", ".cpp", ".css", ".csv", ".go", ".h", ".hpp", ".html", ".java", ".js", ".json", ".jsx",
   ".kt", ".log", ".m", ".md", ".mm", ".php", ".plist", ".py", ".rb", ".rs", ".sh", ".sql", ".swift",
@@ -791,7 +970,7 @@ export async function searchFileContent(root, query, { limit = FILE_SEARCH_DEFAU
 }
 
 async function runFileSearch(args) {
-  const root = resolve(String(args.path || runtime.configDir || process.cwd()));
+  const root = expandUserPath(args.path || runtime.sandboxWorkspaceRoot || runtime.configDir || process.cwd());
   const query = String(args.query || "");
   const mode = String(args.mode || "name");
   const limit = fileSearchLimit(args.limit);
@@ -1628,6 +1807,9 @@ function systemPromptFor(userText = "") {
   return [
     "You are 悬屿, an independent local agent running inside a macOS dynamic island app.",
     "You are not Codex and must not assume Codex runtime, Codex tools, or Codex configuration.",
+    runtime.config.sandboxMode === "danger-full-access"
+      ? `Local tools have full host access. The configured working directory is ${runtime.sandboxWorkspaceRoot}.`
+      : `Local tools run under a ${runtime.config.sandboxMode} macOS Seatbelt sandbox. The writable workspace is ${runtime.sandboxWorkspaceRoot}; .git, .agents and .codex stay protected. Sandboxed network access is ${runtime.config.sandboxNetworkEnabled === true ? "enabled" : "disabled"}.`,
     "To create or edit files, prefer the apply_patch tool over shell here-docs, sed, or echo redirection: it shows a diff for approval and applies atomically. Use file_search to locate files or code before editing.",
     runtime.config.lazyModeEnabled
       ? "Use MCP tools and built-in skills when they help. The user enabled lazy mode, so the runtime auto-approves dangerous tools. Keep tool usage purposeful and concise."
@@ -1678,7 +1860,7 @@ function openAITools() {
       type: "function",
       function: {
         name: "run_skill_script",
-        description: "Run a script inside a built-in skill directory. Requires user approval.",
+        description: "Run a script from a built-in skill under the configured macOS Seatbelt sandbox. Requires user approval.",
         parameters: {
           type: "object",
           properties: {
@@ -1696,7 +1878,7 @@ function openAITools() {
       type: "function",
       function: {
         name: "shell",
-        description: "Run a local shell command. Requires user approval.",
+        description: "Run a local shell command under the configured macOS Seatbelt sandbox. Defaults to the configured workspace and requires user approval.",
         parameters: {
           type: "object",
           properties: {
@@ -1713,12 +1895,12 @@ function openAITools() {
       type: "function",
       function: {
         name: "apply_patch",
-        description: "Create, edit, or delete files via a structured patch. Preferred over shell for file edits: it shows a diff for approval and applies atomically. Format: '*** Begin Patch' then one or more of '*** Add File: <path>' (lines prefixed with +), '*** Update File: <path>' (@@ hunks using ' ' context, '-' removed, '+' added), '*** Delete File: <path>', then '*** End Patch'.",
+        description: "Create, edit, or delete files inside the configured sandbox workspace via a structured patch. Preferred over shell for file edits: it shows a diff for approval and applies atomically. Format: '*** Begin Patch' then one or more of '*** Add File: <path>' (lines prefixed with +), '*** Update File: <path>' (@@ hunks using ' ' context, '-' removed, '+' added), '*** Delete File: <path>', then '*** End Patch'.",
         parameters: {
           type: "object",
           properties: {
             input: { type: "string", description: "Full patch text from *** Begin Patch to *** End Patch." },
-            cwd: { type: "string", description: "Base directory for relative paths. Defaults to the agent config directory." },
+            cwd: { type: "string", description: "Base directory for relative paths. Defaults to the configured sandbox workspace; writes outside it are rejected." },
           },
           required: ["input"],
           additionalProperties: false,
@@ -2093,9 +2275,20 @@ function captureChild(child, { timeoutMs = DEFAULT_LOCAL_PROCESS_TIMEOUT_MS } = 
   });
 }
 
-function spawnLocal(file, argv, { cwd } = {}) {
-  const workdir = cwd || runtime.configDir || process.cwd();
-  const child = spawn(file, argv, { cwd: workdir, env: process.env, detached: true });
+function spawnLocal(file, argv, { cwd, env, detached = true, stdio } = {}) {
+  const workdir = expandUserPath(cwd || runtime.sandboxWorkspaceRoot || runtime.configDir || process.cwd());
+  const launch = sandboxLaunchSpec(file, argv, {
+    mode: runtime.config.sandboxMode,
+    workspaceRoot: runtime.sandboxWorkspaceRoot,
+    networkEnabled: runtime.config.sandboxNetworkEnabled === true,
+    env: env || process.env,
+  });
+  const child = spawn(launch.file, launch.argv, {
+    cwd: workdir,
+    env: launch.env,
+    detached,
+    ...(stdio ? { stdio } : {}),
+  });
   runtime.activeProcesses.add(child);
   child.on("close", () => runtime.activeProcesses.delete(child));
   child.on("error", () => runtime.activeProcesses.delete(child));
@@ -2111,7 +2304,10 @@ async function runShell(args, sessionId = runtime.sessionId) {
     { kind: "shell", name: "shell", displayName: "shell", source: "local" },
     args,
     args.command,
-    () => runLocalProcess("/bin/zsh", ["-lc", String(args.command || "")], { cwd: args.cwd, timeoutMs: args.timeoutMs }),
+    () => runLocalProcess("/bin/zsh", ["-lc", String(args.command || "")], {
+      cwd: args.cwd || runtime.sandboxWorkspaceRoot,
+      timeoutMs: args.timeoutMs,
+    }),
     sessionId,
   );
 }
@@ -2124,7 +2320,7 @@ async function runSkillScript(args, sessionId = runtime.sessionId) {
   }
   const skillDir = dirname(skill.absolutePath);
   const scriptPath = resolve(skillDir, String(args.script || ""));
-  if (!scriptPath.startsWith(skillDir) || !existsSync(scriptPath)) {
+  if (!isPathInside(skillDir, scriptPath) || !existsSync(scriptPath)) {
     return { ok: false, content: "Script does not exist inside the skill directory." };
   }
   return runWithPermission(
@@ -2247,6 +2443,11 @@ async function planApplyPatch(ops, { cwd }) {
   const summary = [];
   for (const op of ops) {
     const absPath = resolve(cwd, op.path);
+    try {
+      await assertSandboxMutationAllowed(absPath);
+    } catch (error) {
+      return { ok: false, error: error?.message || String(error) };
+    }
     if (op.type === "add") {
       if (existsSync(absPath)) return { ok: false, error: `Add File target already exists: ${op.path}` };
       const lineCount = op.content === "" ? 0 : op.content.split("\n").length;
@@ -2278,6 +2479,7 @@ async function planApplyPatch(ops, { cwd }) {
 async function commitApplyPatch(plan) {
   const written = [];
   for (const item of plan) {
+    await assertSandboxMutationAllowed(item.absPath);
     if (item.type === "add" || item.type === "update") {
       await mkdir(dirname(item.absPath), { recursive: true });
       await writeFile(item.absPath, item.content, "utf8");
@@ -2292,7 +2494,7 @@ async function commitApplyPatch(plan) {
 async function runApplyPatch(args, sessionId = runtime.sessionId) {
   const parsed = parseApplyPatch(String(args.input ?? args.patch ?? ""));
   if (!parsed.ok) return { ok: false, content: JSON.stringify({ error: parsed.error }) };
-  const cwd = resolve(String(args.cwd || runtime.configDir || process.cwd()));
+  const cwd = expandUserPath(args.cwd || runtime.sandboxWorkspaceRoot || runtime.configDir || process.cwd());
   const planned = await planApplyPatch(parsed.ops, { cwd });
   if (!planned.ok) return { ok: false, content: JSON.stringify({ error: planned.error }) };
   send({ type: "patch_preview", sessionId, diff: planned.diff, files: planned.summary });
@@ -2495,9 +2697,10 @@ class StdioMCPClient {
   }
 
   async start() {
-    this.process = spawn(this.config.command, this.config.args || [], {
-      cwd: this.config.cwd || runtime.configDir || process.cwd(),
+    this.process = spawnLocal(this.config.command, this.config.args || [], {
+      cwd: this.config.cwd || runtime.sandboxWorkspaceRoot,
       env: { ...process.env, ...(this.config.env || {}) },
+      detached: false,
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.process.stdout.on("data", (chunk) => {
@@ -3296,8 +3499,12 @@ async function replaceHistory(event) {
 
 async function configure(payload) {
   runtime.config = { ...DEFAULT_CONFIG, ...(payload.config || {}) };
+  runtime.config.sandboxMode = normalizeSandboxMode(runtime.config.sandboxMode);
   runtime.apiKey = payload.apiKey || runtime.apiKey || "";
   runtime.configDir = payload.configDir || runtime.configDir || process.cwd();
+  const configuredWorkspace = expandUserPath(runtime.config.sandboxWorkspacePath);
+  await mkdir(configuredWorkspace, { recursive: true });
+  runtime.sandboxWorkspaceRoot = await realpath(configuredWorkspace);
   runtime.skillsRoot = payload.skillsRoot || runtime.skillsRoot || join(process.cwd(), "skills");
   runtime.historyPath = join(runtime.configDir, "history.json");
   runtime.sessionsPath = join(runtime.configDir, "sessions.jsonl");
@@ -3326,6 +3533,13 @@ async function configure(payload) {
       user: memoryUsage(runtime.memorySnapshot.user, memoryLimitFor("user")),
     },
     evolutionCandidateCount: candidates.filter((candidate) => candidate.status === "proposed").length,
+    sandbox: {
+      active: process.platform === "darwin" && runtime.config.sandboxMode !== "danger-full-access",
+      implementation: process.platform === "darwin" ? "seatbelt" : "logical-path-policy",
+      mode: runtime.config.sandboxMode,
+      workspaceRoot: runtime.sandboxWorkspaceRoot,
+      networkEnabled: runtime.config.sandboxNetworkEnabled === true,
+    },
   });
   await sendMemoryAudit();
   await sendEvolutionAudit();

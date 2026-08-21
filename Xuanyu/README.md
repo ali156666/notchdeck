@@ -73,6 +73,7 @@
 
 - 编码会话监控：实时显示本机 Claude Code / Codex 会话状态，带像素吉祥物与 8-bit 音效
 - 内置独立 Node Agent runtime，不依赖外部 CLI
+- Codex 同型 macOS Seatbelt 沙箱：shell、Skill 脚本和 stdio MCP 默认只允许写入工作区并禁止联网
 - 分层长期记忆：有界热记忆 + 不限量的记忆笔记，索引常驻、正文按相关性召回
 - 任务脚手架（Harness）：计划账本、重复调用检测、工具轮次预算、改完文件强制自检
 - 多智能体编队：把独立子任务分给探路/执行/评审/验证/汇总五种角色的子 agent 并行或串行处理
@@ -154,6 +155,16 @@ Agent 循环外面套了一层脚手架（`AgentRuntime/src/harness.ts`），它
 
 五种角色的工具集是按职责裁剪的：探路者、评审者、汇总者只读；验证者能跑命令但不能改文件；只有执行者拿得到写工具。子 agent 一律不能再派发子 agent（深度锁一层），它们调用的危险工具仍然逐个弹权限确认，且确认框全局排队，不会互相覆盖。
 
+### Agent 沙箱
+
+Agent 的本地执行层参考 OpenAI Codex 的 macOS 沙箱结构，通过系统自带的 `/usr/bin/sandbox-exec` 为每个 `shell`、Skill 脚本和 stdio MCP 子进程加载 deny-by-default Seatbelt 策略。设置页新增「沙箱」标签，可选择：
+
+- **只读**：允许读取本机文件，拒绝文件写入和网络访问。
+- **工作区可写（默认）**：允许读取本机文件，只允许写入配置的工作区和 macOS 用户临时目录；工作区中的 `.git`、`.agents`、`.codex` 仍保持只读。
+- **完全访问**：直接启动子进程，不加载 Seatbelt。
+
+默认工作区是 `~/XuanyuWorkspace`。`apply_patch` 也使用同一工作区边界，并在计划与落盘阶段各检查一次路径和符号链接，路径外写入会直接返回 `Sandbox denied write`。沙箱内网络默认关闭；确实需要下载依赖或连接远程 MCP 时，可单独打开「允许沙箱内联网」。运行中的沙箱子进程会收到 `CODEX_SANDBOX=seatbelt`，断网时同时收到 `CODEX_SANDBOX_NETWORK_DISABLED=1`。
+
 这些能力都能在设置的「任务脚手架与多智能体」里单独开关。
 
 ## 截图
@@ -218,7 +229,7 @@ Agent 配置保存在本机应用支持目录：
 ~/Library/Application Support/Xuanyu/agent/config.json
 ```
 
-API key 由应用内 Agent 设置面板写入本机配置文件。这个文件不属于仓库内容。
+API key、沙箱模式和 Agent 工作区由应用内 Agent 设置面板写入本机配置文件。这个文件不属于仓库内容。
 
 ## 权限
 

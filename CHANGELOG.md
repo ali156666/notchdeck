@@ -1,5 +1,21 @@
 # 更新日志
 
+## 1.0.28 - 2026-08-21
+
+### Agent 沙箱
+
+- 参考 OpenAI Codex 的 macOS 执行边界，为 shell、Skill 脚本和 stdio MCP 接入 deny-by-default Seatbelt 沙箱。
+- 默认启用「工作区可写」模式：全盘可读，仅 `~/XuanyuWorkspace` 与用户临时目录可写，网络默认关闭。
+- 新增只读、工作区可写、完全访问三档配置，以及独立的沙箱联网开关。
+- 保护工作区中的 `.git`、`.agents`、`.codex`，阻止子进程覆盖项目元数据。
+- `apply_patch` 与 Seatbelt 共用工作区边界，并增加路径外写入、受保护元数据和符号链接逃逸检查。
+- Agent 状态栏显示当前沙箱状态；运行时向子进程注入 `CODEX_SANDBOX` 与断网标记。
+
+### 验证
+
+- Agent Runtime 测试扩展至 86 项，包含真实 Seatbelt 允许/拒绝探针。
+- Swift 应用完成 Debug 构建、安装与真实进程启动验证。
+
 ## 1.0.27 - 2026-07-27
 
 ### 编码会话监控

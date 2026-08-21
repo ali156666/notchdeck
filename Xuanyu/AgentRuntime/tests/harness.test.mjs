@@ -609,7 +609,12 @@ test("the verify gate makes the agent self-check before answering after a write"
     type: "configure",
     apiKey: "test-key",
     configDir,
-    config: { baseURL: `http://127.0.0.1:${port}/v1`, model: "fake-model", approvalPolicy: "never" },
+    config: {
+      baseURL: `http://127.0.0.1:${port}/v1`,
+      model: "fake-model",
+      approvalPolicy: "never",
+      sandboxWorkspacePath: configDir,
+    },
   });
   await runtimeChild.waitFor((event) => event.type === "ready" && event.memoryUsage);
   runtimeChild.send({ type: "user_message", text: "建个 gate.txt" });
