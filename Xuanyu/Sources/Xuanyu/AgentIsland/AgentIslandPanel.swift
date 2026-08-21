@@ -71,6 +71,10 @@ struct AgentIslandPanel: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.55))
 
+            Label(service.sandboxStatusText, systemImage: "shield.lefthalf.filled")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.55))
+
             Spacer(minLength: 8)
 
             newConversationToolbarButton
@@ -224,6 +228,8 @@ struct AgentIslandPanel: View {
                     }
                 case .memory:
                     memorySettings
+                case .sandbox:
+                    sandboxSettings
                 case .skills:
                     skillsSettings
                 case .mcp:
@@ -301,6 +307,49 @@ struct AgentIslandPanel: View {
                     }
                     .agentSettingCard()
                 }
+            }
+        }
+    }
+
+    private var sandboxSettings: some View {
+        SettingsSection(title: "Codex 同型沙箱", icon: "shield.lefthalf.filled") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("本地 shell、Skill 脚本和 stdio MCP 通过 macOS Seatbelt 启动。默认可读取系统，但只允许写入工作区和临时目录，并阻止修改 .git、.agents 与 .codex。")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.54))
+
+                Picker("文件系统权限", selection: $draftConfig.sandboxMode) {
+                    Text("只读").tag("read-only")
+                    Text("工作区可写").tag("workspace-write")
+                    Text("完全访问").tag("danger-full-access")
+                }
+                .pickerStyle(.segmented)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("工作区")
+                        .settingsCaption()
+                    TextField("~/XuanyuWorkspace", text: $draftConfig.sandboxWorkspacePath)
+                        .textFieldStyle(.plain)
+                        .agentField()
+                    Text("shell 与 apply_patch 默认从这里工作；路径外写入由内核拒绝。支持 ~ 开头的路径。")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.44))
+                }
+
+                Toggle(isOn: $draftConfig.sandboxNetworkEnabled) {
+                    Label("允许沙箱内联网", systemImage: "network")
+                        .font(.system(size: 12, weight: .bold))
+                }
+                .toggleStyle(.switch)
+                .disabled(draftConfig.sandboxMode == "danger-full-access")
+
+                Text(draftConfig.sandboxMode == "danger-full-access"
+                     ? "完全访问会直接启动子进程，不经过 Seatbelt。"
+                     : draftConfig.sandboxNetworkEnabled
+                     ? "子进程可访问网络；文件系统边界仍然生效。"
+                     : "默认断网，并向子进程注入 CODEX_SANDBOX=seatbelt 与 CODEX_SANDBOX_NETWORK_DISABLED=1。")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(draftConfig.sandboxMode == "danger-full-access" ? Color.orange.opacity(0.86) : .white.opacity(0.46))
             }
         }
     }
@@ -1153,6 +1202,7 @@ private enum AgentTimelineItem: Identifiable {
 enum AgentSettingsTab: String, CaseIterable, Identifiable {
     case model = "模型"
     case memory = "记忆"
+    case sandbox = "沙箱"
     case skills = "Skills"
     case mcp = "MCP"
 
@@ -1162,6 +1212,7 @@ enum AgentSettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .model: "cpu"
         case .memory: "brain.head.profile"
+        case .sandbox: "shield.lefthalf.filled"
         case .skills: "sparkles"
         case .mcp: "point.3.connected.trianglepath.dotted"
         }

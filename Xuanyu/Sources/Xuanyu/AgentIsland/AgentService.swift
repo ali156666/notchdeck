@@ -31,6 +31,7 @@ final class AgentService {
     var plan: [AgentPlanStep] = []
     var subAgentRuns: [AgentSubAgentRun] = []
     var harnessPhase = ""
+    var sandboxStatusText = "工作区沙箱"
 
     var activePlanStep: AgentPlanStep? {
         plan.first { $0.status == .inProgress }
@@ -101,6 +102,13 @@ final class AgentService {
         updated.sessionSearchLimit = min(max(updated.sessionSearchLimit, 1), 1_000)
         updated.embeddingModel = updated.embeddingModel.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.embeddingBaseURL = updated.embeddingBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sandboxModes = Set(["read-only", "workspace-write", "danger-full-access"])
+        let sandboxMode = updated.sandboxMode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        updated.sandboxMode = sandboxModes.contains(sandboxMode) ? sandboxMode : "workspace-write"
+        updated.sandboxWorkspacePath = updated.sandboxWorkspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if updated.sandboxWorkspacePath.isEmpty {
+            updated.sandboxWorkspacePath = "~/XuanyuWorkspace"
+        }
         updated.customSkills = updated.customSkills.map { skill in
             AgentSkillConfig(
                 id: skill.id,
@@ -542,6 +550,15 @@ final class AgentService {
                 userMemoryUsageText = usageText(usage["user"])
             }
             evolutionCandidateCount = object["evolutionCandidateCount"] as? Int ?? evolutionCandidateCount
+            if let sandbox = object["sandbox"] as? [String: Any] {
+                let mode = sandbox["mode"] as? String ?? "workspace-write"
+                let network = sandbox["networkEnabled"] as? Bool ?? false
+                switch mode {
+                case "read-only": sandboxStatusText = "只读沙箱"
+                case "danger-full-access": sandboxStatusText = "未启用沙箱"
+                default: sandboxStatusText = network ? "工作区沙箱 · 联网" : "工作区沙箱"
+                }
+            }
         case "assistant_delta":
             appendAssistantDelta(
                 object["delta"] as? String ?? "",
@@ -1323,6 +1340,9 @@ private extension AgentConfig {
             "autoTitleEnabled": autoTitleEnabled,
             "evolutionEnabled": evolutionEnabled,
             "lazyModeEnabled": lazyModeEnabled,
+            "sandboxMode": sandboxMode,
+            "sandboxWorkspacePath": sandboxWorkspacePath,
+            "sandboxNetworkEnabled": sandboxNetworkEnabled,
             "harnessEnabled": harnessEnabled,
             "planningEnabled": planningEnabled,
             "verifyGateEnabled": verifyGateEnabled,

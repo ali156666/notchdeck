@@ -48,6 +48,7 @@
 - 编码会话监控：识别 ChatGPT.app、Claude Code 与 Codex，缩小态显示运行来源，完成后通知
 - Codex Pet 自选：直接使用 `~/.codex/pets` 中的自定义吉祥物
 - 独立 Node Agent runtime，支持冷热分层记忆、任务脚手架、多智能体编队与工程师循环
+- Codex 同型 macOS Seatbelt 沙箱：默认仅工作区可写、子进程断网，并保护 Git/Codex 元数据
 - OpenAI-compatible 与 Anthropic-compatible 模型接口
 - 应用内配置模型、API key、自定义 skills 和本地 MCP servers
 - 工具调用确认、文件上传、桌面文件拖入识别和附件对话

@@ -1,16 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   analyzeCommand,
   applyHunksToContent,
   buildAttachmentContext,
+  buildSeatbeltProfile,
   classifyToolRisk,
   contextUsageFor,
   discoverSkills,
@@ -31,6 +32,8 @@ import {
   searchFileContent,
   searchFileNames,
   searchSessionRecords,
+  sandboxLaunchSpec,
+  sandboxMutationDecision,
   semanticSearchSessionRecords,
   shouldAutoCompact,
 } from "../dist/runtime.mjs";
@@ -107,6 +110,72 @@ test("classifies tool permission risk", () => {
   assert.equal(classifyToolRisk({ kind: "skill_script" }), "confirm");
   assert.equal(classifyToolRisk({ kind: "mcp", annotations: { readOnlyHint: true } }), "auto");
   assert.equal(classifyToolRisk({ kind: "mcp", name: "delete_file" }), "confirm");
+});
+
+test("enforces Codex-style workspace mutation boundaries", () => {
+  const workspace = "/tmp/xuanyu-workspace";
+  assert.equal(sandboxMutationDecision(join(workspace, "Sources", "main.swift"), {
+    mode: "workspace-write",
+    workspaceRoot: workspace,
+  }).allowed, true);
+  assert.match(sandboxMutationDecision("/tmp/outside.txt", {
+    mode: "workspace-write",
+    workspaceRoot: workspace,
+  }).reason, /outside workspace/);
+  assert.match(sandboxMutationDecision(join(workspace, ".git", "config"), {
+    mode: "workspace-write",
+    workspaceRoot: workspace,
+  }).reason, /protected metadata/);
+  assert.match(sandboxMutationDecision(join(workspace, "file.txt"), {
+    mode: "read-only",
+    workspaceRoot: workspace,
+  }).reason, /read-only/);
+  assert.equal(sandboxMutationDecision("/tmp/outside.txt", {
+    mode: "danger-full-access",
+    workspaceRoot: workspace,
+  }).allowed, true);
+});
+
+test("builds a deny-by-default Seatbelt profile", () => {
+  const blocked = buildSeatbeltProfile({ mode: "workspace-write", networkEnabled: false });
+  assert.match(blocked, /\(deny default\)/);
+  assert.match(blocked, /WORKSPACE_ROOT/);
+  assert.match(blocked, /WORKSPACE_GIT/);
+  assert.doesNotMatch(blocked, /allow network-outbound/);
+
+  const connected = buildSeatbeltProfile({ mode: "workspace-write", networkEnabled: true });
+  assert.match(connected, /allow network-outbound/);
+});
+
+test("Seatbelt permits workspace writes and rejects outside/protected writes", {
+  skip: process.platform !== "darwin" || !existsSync("/usr/bin/sandbox-exec"),
+}, async () => {
+  const workspace = await realpath(await mkdtemp(join(tmpdir(), "xuanyu-seatbelt-workspace-")));
+  const outsideRoot = join(homedir(), `.xuanyu-seatbelt-denied-${process.pid}-${Date.now()}`);
+  const tempRoot = await realpath(tmpdir());
+
+  const run = (script) => {
+    const launch = sandboxLaunchSpec("/bin/zsh", ["-lc", script], {
+      mode: "workspace-write",
+      workspaceRoot: workspace,
+      tempRoot,
+      networkEnabled: false,
+      env: process.env,
+    });
+    return spawnSync(launch.file, launch.argv, { cwd: workspace, env: launch.env, encoding: "utf8" });
+  };
+
+  const allowed = run("printf allowed > allowed.txt");
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.equal(await readFile(join(workspace, "allowed.txt"), "utf8"), "allowed");
+
+  const outside = run(`printf blocked > ${JSON.stringify(join(outsideRoot, "blocked.txt"))}`);
+  assert.notEqual(outside.status, 0);
+  assert.equal(existsSync(join(outsideRoot, "blocked.txt")), false);
+
+  const protectedWrite = run("mkdir .git");
+  assert.notEqual(protectedWrite.status, 0);
+  assert.equal(existsSync(join(workspace, ".git")), false);
 });
 
 test("normalizes configured skills", () => {
@@ -491,7 +560,11 @@ test("completed turns auto-write memory and emit generated titles", async (conte
     type: "configure",
     apiKey: "test-key",
     configDir,
-    config: { baseURL: `http://127.0.0.1:${address.port}/v1`, model: "fake-model" },
+    config: {
+      baseURL: `http://127.0.0.1:${address.port}/v1`,
+      model: "fake-model",
+      sandboxWorkspacePath: configDir,
+    },
   });
   await runtimeChild.waitFor((event) => event.type === "ready" && event.memoryUsage);
   runtimeChild.send({ type: "user_message", text: "以后 Agent 回答保持中文短句，并支持 embedding 语义检索。" });
@@ -590,7 +663,11 @@ test("openai protocol emits assistant deltas before the SSE stream closes", asyn
     type: "configure",
     apiKey: "test-key",
     configDir,
-    config: { baseURL: `http://127.0.0.1:${address.port}/v1`, model: "fake-model" },
+    config: {
+      baseURL: `http://127.0.0.1:${address.port}/v1`,
+      model: "fake-model",
+      sandboxWorkspacePath: configDir,
+    },
   });
   await runtimeChild.waitFor((event) => event.type === "ready" && event.memoryUsage);
   runtimeChild.send({ type: "user_message", text: "测试实时流。" });
@@ -1349,7 +1426,11 @@ test("apply_patch previews a diff, requires approval, then writes the file", asy
     type: "configure",
     apiKey: "test-key",
     configDir,
-    config: { baseURL: `http://127.0.0.1:${address.port}/v1`, model: "fake-model" },
+    config: {
+      baseURL: `http://127.0.0.1:${address.port}/v1`,
+      model: "fake-model",
+      sandboxWorkspacePath: configDir,
+    },
   });
   await runtimeChild.waitFor((event) => event.type === "ready" && event.memoryUsage);
   runtimeChild.send({ type: "user_message", text: "create notes/hello.txt" });

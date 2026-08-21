@@ -470,6 +470,9 @@ struct AgentConfig: Codable, Equatable {
     var autoTitleEnabled: Bool
     var evolutionEnabled: Bool
     var lazyModeEnabled: Bool
+    var sandboxMode: String
+    var sandboxWorkspacePath: String
+    var sandboxNetworkEnabled: Bool
     var harnessEnabled: Bool
     var planningEnabled: Bool
     var verifyGateEnabled: Bool
@@ -505,6 +508,9 @@ struct AgentConfig: Codable, Equatable {
         autoTitleEnabled: Bool = true,
         evolutionEnabled: Bool = true,
         lazyModeEnabled: Bool = false,
+        sandboxMode: String = "workspace-write",
+        sandboxWorkspacePath: String = "~/XuanyuWorkspace",
+        sandboxNetworkEnabled: Bool = false,
         harnessEnabled: Bool = true,
         planningEnabled: Bool = true,
         verifyGateEnabled: Bool = true,
@@ -539,6 +545,9 @@ struct AgentConfig: Codable, Equatable {
         self.autoTitleEnabled = autoTitleEnabled
         self.evolutionEnabled = evolutionEnabled
         self.lazyModeEnabled = lazyModeEnabled
+        self.sandboxMode = sandboxMode
+        self.sandboxWorkspacePath = sandboxWorkspacePath
+        self.sandboxNetworkEnabled = sandboxNetworkEnabled
         self.harnessEnabled = harnessEnabled
         self.planningEnabled = planningEnabled
         self.verifyGateEnabled = verifyGateEnabled
@@ -575,6 +584,9 @@ struct AgentConfig: Codable, Equatable {
         case autoTitleEnabled
         case evolutionEnabled
         case lazyModeEnabled
+        case sandboxMode
+        case sandboxWorkspacePath
+        case sandboxNetworkEnabled
         case harnessEnabled
         case planningEnabled
         case verifyGateEnabled
@@ -612,6 +624,9 @@ struct AgentConfig: Codable, Equatable {
         autoTitleEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoTitleEnabled) ?? true
         evolutionEnabled = try container.decodeIfPresent(Bool.self, forKey: .evolutionEnabled) ?? true
         lazyModeEnabled = try container.decodeIfPresent(Bool.self, forKey: .lazyModeEnabled) ?? false
+        sandboxMode = try container.decodeIfPresent(String.self, forKey: .sandboxMode) ?? "workspace-write"
+        sandboxWorkspacePath = try container.decodeIfPresent(String.self, forKey: .sandboxWorkspacePath) ?? "~/XuanyuWorkspace"
+        sandboxNetworkEnabled = try container.decodeIfPresent(Bool.self, forKey: .sandboxNetworkEnabled) ?? false
         harnessEnabled = try container.decodeIfPresent(Bool.self, forKey: .harnessEnabled) ?? true
         planningEnabled = try container.decodeIfPresent(Bool.self, forKey: .planningEnabled) ?? true
         verifyGateEnabled = try container.decodeIfPresent(Bool.self, forKey: .verifyGateEnabled) ?? true
@@ -648,6 +663,9 @@ struct AgentConfig: Codable, Equatable {
         autoTitleEnabled: true,
         evolutionEnabled: true,
         lazyModeEnabled: false,
+        sandboxMode: "workspace-write",
+        sandboxWorkspacePath: "~/XuanyuWorkspace",
+        sandboxNetworkEnabled: false,
         harnessEnabled: true,
         planningEnabled: true,
         verifyGateEnabled: true,
